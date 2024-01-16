@@ -93,13 +93,9 @@ Thus, there are two keypairs, one for each participant:
 * Alice per-address keypair `A = a * G`.
   - Alice MAY derive this using any convenient derivation scheme from some root
     key.
-* Bob node ID keypair `B = b * G + b' * G`.
+* Bob node ID keypair `B = b * G`.
   - `b` and `b * G` are simply the private and public keys of the Lightning
     Network node ID of Bob.
-  - `b'` is a tweak provided by Alice to Bob.
-    Alice may set this tweak to 0.
-    - If Alice sets this to non-0, Alice MAY derive this using any convenient
-      *hardened* derivation scheme from some root key.
 
 The public keys are sorted based on the lexographic ordering of the 33-byte
 compressed SEC representation.
@@ -113,7 +109,7 @@ other is Alice only, with a relative timelock via `OP_CHECKSEQUENCEVERIFY`:
 * `<P[0]> OP_CHECKSIGVERIFY <P[1]> OP_CHECKSIG`
 * `<4032 blocks> OP_CHECKSEQUENCEVERIFY OP_DROP <A> OP_CHECKSIG`
 
-The above are the leaves in the Taproot tree, with version `0xC0`.
+The above are the leaves in the Taproot tree, with leaf version `0xC0`.
 
 > **Rationale** We fix the relative timelock instead of allowing this to
 > be varied in order to simplify the protocol, and for Bob to be
@@ -137,7 +133,7 @@ the public keys are given to the public key aggregation is `P[0], P[1]`.
 >     of the Tapscript paths.
 > 2.  It prevents third parties from learning that the keyspend path is not
 >     useable, as the internal public key is different for each Alice and Bob.
-> 3.  It allows future version of this protocol to use the keyspend path for
+> 3.  It allows future revision of this protocol to use the keyspend path for
 >     cooperative cases, which reduces blockchain space and improves Alice and
 >     Bob privacy, at the cost of greater implementation and protocol
 >     complexity.
@@ -162,7 +158,7 @@ the public keys are given to the public key aggregation is `P[0], P[1]`.
 > * If Alice were to derive a tweak somehow and provide the scalar to Bob:
 >   * If Alice uses some sort of HD scheme, then Alice has to use a
 >     hardened derivation from its private key.
->     A non-hardeened derivation would prevent Alice from safely revealing
+>     A non-hardened derivation would prevent Alice from safely revealing
 >     the tweak, as the tweak would allow Bob to compute the parent private
 >     key.
 >     By being forced to use hardened derivation, Alice then cannot create a
@@ -183,7 +179,7 @@ the public keys are given to the public key aggregation is `P[0], P[1]`.
 > assuming Alice does not publicize its public key, then it is not
 > possible for an onchain observer to determine which Bob is being
 > used, or even that this is a swap-in-potentiam address.
-> As it is intended that a future version of this specification will
+> As it is intended that a future revision of this specification will
 > enable the keyspend path, this is considered an acceptable tradeoff.
 
 #### Test Vectors For Internal Public Key Derivation
@@ -299,6 +295,8 @@ absolute blockheight `t`.
     (hashlock branch)
   * `<t> OP_CHECKLOCKTIMEVERIFY OP_DROP <A[swap]> OP_CHECKSIG`
     (timelock branch)
+* Assemble the Merkle Tree Root as described in [BIP-341][] and
+  tweak the internal public key to generate the HTLC address.
 
 TODO
 
@@ -448,10 +446,12 @@ On successful return, the LSP has, as Bob, updated its
 persistently-stored `state` of the spent swap-in-potentiam UTXO to
 `alice_moved`.
 This state allows the client to repeat the `c=.sip.sign_sip_onchain`
-call with the same UTXO (for example, to RBF a transaction).
+call with the same UTXO (for example, to RBF a transaction, or
+idempotency in case the client disconnects or crashes before it can
+receive the signature from the LSP).
 However, spending a swap-in-potentiam UTXO to an onchain address
 also prevents it from being used to fund a 0-conf Lightning
-operation.
+operation in the future.
 
 TODO
 
@@ -595,6 +595,13 @@ determines how much the LSP will deduct from the onchain
 amount, prior to sending an in-Lightning HTLC to the
 client.
 
+If a client has an existing swap-in-potentiam UTXO, and its
+deadline goes below the deadline of the LSP it committed to, then
+the client SHOULD use the previous flow to spend it onchain to
+another swap-in-potentiam address to itself.
+This resets te deadline, at the expense of having to re-wait for
+the `min_confirmations` again.
+
 ### Opening 0-Conf Lightning Channels Backed By Swap-in-potentiam
 
 A client, taking on the role of Alice, may request the LSP,
@@ -628,8 +635,8 @@ The opening flow goes this way:
   `temporary_channel_id` of the subsequent `open_channel`.
 * The client sends `open_channel` with the indicated
   `temporary_channel_id`, with `type` including `option_zeroconf`.
-* The LSP checks the other parameters of the `open_channel`,
-  and if they are acceptable, sends `accept_channel`.
+* The LSP checks the other parameters of the `open_channel`, and
+  if they are acceptable, sends `accept_channel`.
 * The client constructs the 0-conf funding transaction.
   * The transaction spends one or more confirmed (to depth
     `min_confirmations`) swap-in-potentiam UTXOs, all of which
@@ -642,25 +649,26 @@ The opening flow goes this way:
   * The transaction feerate is at least the `min_feerate` of the
     lowest-deadline UTXO spent, according to the
     `onchain_fee_schedule`.
-* The client calls `c=.sip.provide_funding_tx`, indicating
+* The client calls `c=.sip.sign_funding_bob`, indicating
   the `temporary_channel_id` and the funding transaction contents.
   * The LSP validates that the spent swap-in-potentiam UTXOs can
     transition to the state `bob_secured`, and moves them to that
-    state, associating them with the channel opening session.
+    state, associating them with this channel opening session.
+  * The LSP creates the Bob-side signatures for the funding
+    transaction.
+  * The LSP returns the Bob-side signatures.
 * The client sends `funding_created` with the transaction ID of
   the funding transaction.
-  * The LSP validates that the transaction ID matches the one from
-    the previous `c=.sip.provide_funding_tx`.
 * The LSP sends `funding_signed`.
 * The client generates the Alice-role signatures for the channel
   funding transaction, then calls `c=.sip.sign_funding_alice` with
-  those signatures.
-  * The LSP generates the Bob-role signatures for the channel
-    funding transaction and broadcasts it.
+  those signatures, as well as the details of the transaction.
+  * The LSP validates that the funding transaction, when
+    constructed, has the same transaction ID as was sent in
+    `funding_created`.
   * The LSP removes the association of the UTXOs involved with the
     channel open, so that abort no longer moves them to
     `bob_retried` state.
-  * The LSP returns the Bob-role signatures to the client.
   * The client also broadcasts the fully-signed channel funding
     transaction.
 * The LSP and client exchange `channel_ready` without waiting for
@@ -669,8 +677,146 @@ The opening flow goes this way:
   becomes too close (as per judgement by the LSP) the LSP may
   CPFP-RBF the funding transaction via the anchor output.
 
+#### Indicating Intent To Fund 0-Conf Backed By Swap-in-potentiam
+
+A client first informs the LSP of an upcoming 0-conf channel
+funding, by the client, with the `c=.sip.intend_to_fund_channel`
+call, with parameters:
+
+```JSON
+{
+  "temporary_channel_id": "123456789abcdef123456789abcdef123456789abcdef123456789abcdef"
+}
+```
+
+`temporary_channel_id` is a JSON string containing the hex dump of
+a fresh, random, 32-byte temporary channel ID that the client will
+use in a subsequent [BOLT 2 `open_channel` Message][].
+It MUST be exactly 64 hexadecimal characters.
+
+The `temporary_channel_id` MUST NOT be the same as the channel ID
+of any other channel, including the temporary channel ID of any
+other channels currently being opened.
+A client MAY pick the 32 bytes uniformly at random from a
+high-entropy source, which should be sufficient in practice to
+prevent conflicting with other channel IDs.
+
+The LSP MUST check that the `temporary_channel_id` does not match
+the channel ID of any current open channel, or any current
+`temporary_channel_id` of any channel currently being opened.
+
+On failure, `c=.sip.intend_to_fund_channel` may have the following
+errors:
+
+* `duplicate_channel_id` (1) - the `temporary_channel_id` is
+  already the (temporary or permanent) channel ID of an existing
+  channel of the LSP.
+
+On success, `c=.sip.intend_to_fund_channel` returns the empty
+object `{}`.
+
+After success, the LSP MUST accept an `open_channel` if all
+conditions below are true:
+
+* Its `temporary_channel_id` matches the one given in this call.
+* No more than 20 minutes have passed since the call specifying
+  that `temporary_channel_id` was given.
+* The channel has the following types set:
+  * `option_zeroconf`
+  * `option_anchor_outputs` **OR** `option_anchors_zero_fee_htlc_tx`
+* All other channel parameters (other than `temporary_channel_id`
+  and `option_zeroconf`) from the client are acceptable to the
+  LSP.
+
+### Requesting Bob-side Signatures To Fund 0-conf Channel
+
+After the client receives the [BOLT #2 `accept_channel`
+Message][] from the above sequence, it requests signatures from
+the LSP as Bob using the `c=.sip.sign_funding_bob` call.
+
+The `c=.sip.sign_funding_bob` call provides information about
+the structure of the upcoming funding transaction.
+
+The funding transaction MUST have all inputs as swap-in-potentiam
+addresses with the LSP as Bob.
+The funding transaction has a channel funding outpoint and an
+anchor output, and an optional change output.
+
+```JSON
+{
+  "temporary_channel_id": "123456789abcdef123456789abcdef123456789abcdef123456789abcdef",
+  "inputs": [
+    {
+      "prev_out": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210:2",
+      "alice_pubkey": "02fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+    },
+    {
+      "prev_out": "9876543219fedcba9876543219fedcba9876543219fedcba9876543219fedcba:1",
+      "alice_pubkey": "039876543219fedcba9876543219fedcba9876543219fedcba9876543219fedcba"
+    }
+  ],
+  "change": {
+    "amount_sat": 99999,
+    "alice_pubkey": "039876543219fedcba9876543219fedcba9876543219fedcba9876543219fedcba"
+  }
+  "funding_output_script": "5221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae"
+  "order": "cfa",
+  "nLockTime": 655454
+}
+```
+
+`temporary_channel_id` is the temporary channel ID that was used
+in a previous `c=.sip.intend_to_fund_channel` call, and which the
+client has used in an `open_channel` to which the LSP has responded
+with an `accept_channel`.
+
+`inputs` is a non-empty array of objects describing the inputs to
+the funding transaction.
+Each object has two keys:
+
+* `prev_out` is the unspent transaction output to be spent into
+  the funding transaction.
+* `alice_pubkey` is the Alice public key for the swap-in-potentiam
+  address that locks the above unspent transaction output.
+  The LSP node ID is the Bob public key.
+
+`change` is an ***optional*** object.
+If absent, it indicates that there is no change output.
+If specified, the object has two keys:
+
+* `amount_sat` is the amount to put in the change output.
+* `alice_pubkey` is the Alice public key for the swap-in-potentiam
+  address that locks the change output.
+  The LSP node ID is the Bob public key.
+
+`funding_output_script` is the `scriptPubKey` to be used for the
+funding output of the transaction.
+
+`order` is a string, indicating the order of the outputs.
+
+* If `change` is not specified, `order` is a two-character string
+  composed of the characters `f` and `a` in any order:
+  * `"fa"` indicates the funding output is output index 0, and the
+    anchor output is output index 1.
+  * `"af"` indicates the anchor output is output index 0, and the
+    funding output is output index 1.
+* If `change` is specified, `order` is a three-character string
+  composed of the characters `f`, `a`, and `c` in any order:
+  * `"fac"` indicates the funding output is output index 0, the
+    anchor output is output index 1, and the change output is
+    output index 2.
+  * `"fca"` and so on.
+  * `"afc"`
+  * `"acf"`
+  * `"cfa"`
+  * `"caf"`
+
+TODO
+
 [SIP]: https://lists.linuxfoundation.org/pipermail/lightning-dev/2023-January/003810.html
 [BIP-327]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki
 [BIP-327 PubKey Agg]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#user-content-Public_Key_Aggregation
 [BIP-341]: https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki
+[BOLT 2 `open_channel` Message]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message
+[BOLT 2 `accept_channel` Message]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-accept_channel-message
 [BOLT 3 Anchor Output]: https://github.com/lightning/bolts/blob/master/03-transactions.md#to_local_anchor-and-to_remote_anchor-output-option_anchors
