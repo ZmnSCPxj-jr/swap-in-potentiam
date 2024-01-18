@@ -227,11 +227,11 @@ is then passed to a bech32m encoder to generate the address.
 
 TODO
 
-### Spending Via 2-of-2 Path
+### Spending Via 2-of-2 Tapleaf Path
 
 TODO
 
-### Spending Via Tinelock Path
+### Spending Via Tinelock Tapleaf Path
 
 TODO
 
@@ -333,15 +333,24 @@ equivalent representation:
     and that operation is deeply confirmed.
 * `alice_moved`
   - This output was used by Alice in an onchain operation.
+* `bob_provisionally_secured`
+  - This output was used by Alice in a 0-conf Lightning operation
+    that has not yet completed, and Bob needs to ensure it is not
+    used in another swap-in-potentiam operation.
+    * In this state, the transaction output is associated with a
+      specific 0-conf Lightning operation.
+      If that operation aborts due to a disconnection or restart of
+      Bob, then the state MUST be moved to `bob_retriable`.
 * `bob_secured`
-  - This output was used by Alice in a 0-conf Lightning operation,
-    and Bob needs to ensure it is not used in another 0-conf
-    Lightning operation.
-* `bob_retried`
+  - This output was used by Alice in a 0-conf Lightning operation
+    that has completed, and Bob needs to ensure it is not used in
+    another swap-in-potentiam operation.
+* `bob_retriable`
   - This output was used by Alice in a 0-conf Lightning operation,
     but the operation got aborted (e.g. for a 0-conf channel open,
     the connection dropped before Bob could receive the Alice-side
     signature for the funding transaction).
+    Bob can now allow Alice to reuse this output.
 
 Alice MAY request either an onchain operation or a 0-conf Lightning
 operation, when specifying a swap-in-potentiam UTXO.
@@ -354,19 +363,22 @@ Bob MUST atomically do:
   * `confirmed_alice_change` - allow the request and set state to
     `alice_moved`
   * `alice_moved` - allow the request and not change state.
+  * `bob_provisionally_secured` - disallow the request.
   * `bob_secured` - disallow the request.
-  * `bob_retried` - allow the request and change state to
+  * `bob_retriable` - allow the request and change state to
     `alice_moved`.
 * When Alice requests a 0-conf Lightning operation on a
   swap-in-potentiam UTXO, if the state is below, Bob MUST:
-  * Unknown - allow the request and set state to `bob_secured`.
+  * Unknown - allow the request and set state to
+    `bob_provisionally_secured`.
   * `unconfirmed_alice_change` - reject the request.
   * `confirmed_alice_change` - allow the request and set state
-    to `bob_secured`.
+    to `bob_provisionally_secured`.
   * `alice_moved` - disallow the request.
+  * `bob_provisionally_secured` - disallow the request.
   * `bob_secured` - disallow the request.
-  * `bob_retried` - allow the request and change state to
-    `bob_secured`.
+  * `bob_retriable` - allow the request and change state to
+    `bob_provisionally_secured`.
 
 > **Rationale** Ideally, Bob needs to ensure that a transaction
 > output is signed exactly once.
@@ -383,10 +395,24 @@ Bob MUST atomically do:
 > during a multi-step 0-conf Lightning operation, like a channel
 > open, did not prevent the same transaction outputs from being
 > reused in an operation that succeeds, which is why there is
-> `bob_retried` state.
+> `bob_retriable` state.
 >
 > Finally, the onchain side of 0-conf Lightning operations
 > have an anchor output, as noted in a previous section.
+
+> **Rationale** Bob sets transaction outputs to
+> `unconfirmed_alice_change` if they are the Alice-side change
+> output from a 0-conf Lightning operation.
+> Bob disallows spending from unconfirmed change outputs of
+> 0-conf Lightning operations to arbitrary onchain transactions
+> because Alice is allowed to create an arbitrary transaction from
+> any swap-in-potentiam UTXOs it owns, including from UTXOs that
+> are currently unconfirmed.
+> If an unconfirmed change output from a 0-conf Lightning
+> operation were allowed to be spent in an aribtrary transaction,
+> however, Alice can pin the 0-conf Lightning operation, deferring
+> its confirmation and possibly violating the security guarantees
+> of swap-in-potentiam.
 
 The following state transitions are also needed depending on
 chain state:
@@ -398,17 +424,28 @@ chain state:
   typical `accept_channel`), then Bob MUST set its state to
   `confirmed_alice_change`.
 
-The following state transitions are also needed depending on
-Lightning operation aborts:
+The following state transitions are also needed depending on if a
+0-conf Lightning operation described in this specification
+*aborts*:
 
-* If the state of a swap-in-potentiam UTXO is `bob_secured`,
-  and it is used in a channel funding transaction that does
-  not reach Bob (role taken by an LSP) receiving the
-  `c=.sip.sign_funding_alice` API request, before the connection is
-  interrupted (and thus aborting the channel open), then Bob
-  MUST set its state to `bob_retried`.
+* If the state of a swap-in-potentiam UTXO is
+  `bob_provisionally_secured`, and it is used in a channel funding
+  transaction that does not reach Bob (role taken by an LSP)
+  receiving the `c=.sip.sign_funding_alice` API request, before
+  the connection is interrupted (and thus aborting the channel
+  open), then Bob MUST set its state to `bob_retriable`.
   - This includes the case where Bob / LSP restarts during channel
     opening before receiving `c=.sip.sign_funding_alice`.
+
+The following state transitions are also needed depending on if a
+0-conf Lightning operation described in this specification
+*completes*:
+
+* If the state of a swap-in-potentiam UTXO is
+  `bob_provisionally_secured`, and it is used in a channel funding
+  transaction that reaches Bob (role taken by an LSP) receiving a
+  valid `c=.sip.sign_funding_alice` API request, then Bob MUST set
+  its state to `bob_secured`.
 
 ## Client As Alice, LSP As Bob Flows
 
@@ -480,7 +517,9 @@ defined.
       "max_deadline": 1008,
       "min_feerate": 10000
     }
-  ]
+  ],
+  "valid_until": "2024-01-18T14:42:24.000Z",
+  "promise": "arbitrary-string-9999"
 }
 ```
 
@@ -526,9 +565,29 @@ Objects in the array MUST be sorted on the
 highest.
 Objects in the array MUST NOT duplicate `max_deadline`.
 `max_deadline` MUST be non-zero and less than 4032.
-`min_feerate` is an onchain feerate in millisatoshis
-per weight unit (or equivalently, satoshis per 1000
-weight units) and must be at least 253.
+`min_feerate` is a [<LSPS0 onchain fee rate>][] in millisatoshis
+per weight unit (or equivalently, satoshis per 1000 weight units)
+and must be at least 253.
+
+`valid_until` is a [<LSPS0 datetime>][] indicating the maximum
+time that the returned parameters are still valid.
+The LSP MUST return a `valid_until` time that is at least 60
+minutes in the future.
+The client SHOULD call `c=.sip.get_sip_info` again if its
+cached swap-in-potentiam information has a `valid_until` that
+is less than 10 minutes into the future.
+
+`promise` is an arbitrary JSON string that identifies this set of
+the returned parameters.
+The LSP:
+
+* MUST NOT use JSON string `\` escapes.
+* MUST use only characters in the ASCII range 32 to 126 (except
+  characters that require a JSON string `\` escape to represent).
+* MUST return a JSON string of no more than 256 bytes in ASCII
+  encoding.
+
+#### Swap-in-potentiam Transaction Output Deadline
 
 The "deadline" is the number of blocks remaning before
 the `OP_CHECKSEQUENCEVERIFY` branch of the
@@ -597,9 +656,9 @@ client.
 
 If a client has an existing swap-in-potentiam UTXO, and its
 deadline goes below the deadline of the LSP it committed to, then
-the client SHOULD use the previous flow to spend it onchain to
-another swap-in-potentiam address to itself.
-This resets te deadline, at the expense of having to re-wait for
+the client SHOULD use the spend-to-onchain flow to spend it
+onchain to another swap-in-potentiam address to itself.
+This resets the deadline, at the expense of having to re-wait for
 the `min_confirmations` again.
 
 ### Opening 0-Conf Lightning Channels Backed By Swap-in-potentiam
@@ -652,8 +711,9 @@ The opening flow goes this way:
 * The client calls `c=.sip.sign_funding_bob`, indicating
   the `temporary_channel_id` and the funding transaction contents.
   * The LSP validates that the spent swap-in-potentiam UTXOs can
-    transition to the state `bob_secured`, and moves them to that
-    state, associating them with this channel opening session.
+    transition to the state `bob_provisionally_secured`, and moves
+    them to that state, associating them with this channel opening
+    session.
   * The LSP creates the Bob-side signatures for the funding
     transaction.
   * The LSP returns the Bob-side signatures.
@@ -666,9 +726,11 @@ The opening flow goes this way:
   * The LSP validates that the funding transaction, when
     constructed, has the same transaction ID as was sent in
     `funding_created`.
-  * The LSP removes the association of the UTXOs involved with the
-    channel open, so that abort no longer moves them to
-    `bob_retried` state.
+  * The LSP validates that the signatures are valid for the
+    funding transaction and that the transaction can be
+    broadcasted.
+  * The LSP moves the spent swap-in-potentiam UTXOs from the state
+    `bob_provisionally_secured` to `bob_secured`.
   * The client also broadcasts the fully-signed channel funding
     transaction.
 * The LSP and client exchange `channel_ready` without waiting for
@@ -685,7 +747,8 @@ call, with parameters:
 
 ```JSON
 {
-  "temporary_channel_id": "123456789abcdef123456789abcdef123456789abcdef123456789abcdef"
+  "temporary_channel_id": "123456789abcdef123456789abcdef123456789abcdef123456789abcdef",
+  "promise": "arbitrary-string-9999"
 }
 ```
 
@@ -697,30 +760,66 @@ It MUST be exactly 64 hexadecimal characters.
 The `temporary_channel_id` MUST NOT be the same as the channel ID
 of any other channel, including the temporary channel ID of any
 other channels currently being opened.
-A client MAY pick the 32 bytes uniformly at random from a
-high-entropy source, which should be sufficient in practice to
+A client SHOULD pick the 32 bytes uniformly at random from a
+high-entropy source, which would be sufficient in practice to
 prevent conflicting with other channel IDs.
 
 The LSP MUST check that the `temporary_channel_id` does not match
 the channel ID of any current open channel, or any current
 `temporary_channel_id` of any channel currently being opened.
 
+`promise` is the arbitrary string returned from a previous
+`c=.sip.get_sip_info` call, which identifies the set of parameters
+that the client and LSP will use for this 0-conf Lightning
+operation.
+
+The LSP MUST check that the indicated `promise` string was returned
+by the LSP in a previous `c=.sip.get_sip_info`, and that its
+`valid_until` is still in the future.
+
 On failure, `c=.sip.intend_to_fund_channel` may have the following
-errors:
+errors (error code numbers in parentheses):
 
 * `duplicate_channel_id` (1) - the `temporary_channel_id` is
   already the (temporary or permanent) channel ID of an existing
   channel of the LSP.
+* `invalid_or_unknown_promise` (2) - the `promise` does not
+  identify a set of parameters returned in a previous
+  `c=.sip.get_sip_info` call, or its `valid_until` is now in the
+  past.
+* `too_many_operations` (3) - there are too many running 0-conf
+  channel funding operations that have not completed yet.
 
 On success, `c=.sip.intend_to_fund_channel` returns the empty
 object `{}`.
 
+On success, the LSP SHOULD start a timeout of at least 10 minutes.
+If the timeout is reached, and the channel opening has not reached
+the step where the LSP receives and validates a corresponding
+`c=.sip.sign_funding_alice` call, the LSP:
+
+* SHOULD `error` the channel if opening has started.
+* SHOULD fail any `c=.sip.sign_funding_bob` and
+  `c=.sip.sign_funding_alice` calls for this channel.
+* MAY reject an `open_channel` of the specified
+  `temporary_channel_id` if it is a 0-conf channel open.
+
+> **Rationale** The timeout exists to prevent a client from making
+> multiple `c=.sip.intend_to_fund_channel` calls without actually
+> funding any channels, thereby wasting LSP resources.
+
+After success, the client SHOULD send an `open_channel` with the
+given `temporary_channel_id`, with 0-conf and anchor commitment
+types.
+The client MUST ensure that it can build a funding transaction
+with an onchain fee rate equal or higher than required for the
+shortest-deadline UTXO it intends to spend.
+
 After success, the LSP MUST accept an `open_channel` if all
 conditions below are true:
 
+* The timeout has not been reached yet.
 * Its `temporary_channel_id` matches the one given in this call.
-* No more than 20 minutes have passed since the call specifying
-  that `temporary_channel_id` was given.
 * The channel has the following types set:
   * `option_zeroconf`
   * `option_anchor_outputs` **OR** `option_anchors_zero_fee_htlc_tx`
@@ -728,7 +827,7 @@ conditions below are true:
   and `option_zeroconf`) from the client are acceptable to the
   LSP.
 
-### Requesting Bob-side Signatures To Fund 0-conf Channel
+#### Requesting Bob-side Signatures To Fund 0-conf Channel
 
 After the client receives the [BOLT #2 `accept_channel`
 Message][] from the above sequence, it requests signatures from
@@ -748,18 +847,23 @@ anchor output, and an optional change output.
   "inputs": [
     {
       "prev_out": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210:2",
-      "alice_pubkey": "02fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+      "alice_pubkey": "02fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+      "amount_sat": 19920
     },
     {
       "prev_out": "9876543219fedcba9876543219fedcba9876543219fedcba9876543219fedcba:1",
-      "alice_pubkey": "039876543219fedcba9876543219fedcba9876543219fedcba9876543219fedcba"
+      "alice_pubkey": "039876543219fedcba9876543219fedcba9876543219fedcba9876543219fedcba",
+      "amount_sat": 19920
     }
   ],
   "change": {
     "amount_sat": 99999,
     "alice_pubkey": "039876543219fedcba9876543219fedcba9876543219fedcba9876543219fedcba"
-  }
-  "funding_output_script": "5221023da092f6980e58d2c037173180e9a465476026ee50f96695963e8efe436f54eb21030e9f7b623d2ccc7c9bd44d66d5ce21ce504c0acf6385a132cec6d3c39fa711c152ae"
+  },
+  "funding": {
+    "amount_sat": 100000,
+    "output_script": "00204321098765fedcba4321098765fedcba4321098765fedcba4321098765fedcba"
+  },
   "order": "cfa",
   "nLockTime": 655454
 }
@@ -772,13 +876,15 @@ with an `accept_channel`.
 
 `inputs` is a non-empty array of objects describing the inputs to
 the funding transaction.
-Each object has two keys:
+Each object has three keys:
 
 * `prev_out` is the unspent transaction output to be spent into
-  the funding transaction.
+  the funding transaction, [<LSPS0 outpoint>][].
 * `alice_pubkey` is the Alice public key for the swap-in-potentiam
-  address that locks the above unspent transaction output.
+  address that locks the above unspent transaction output,
+  [<LSPS0 pubkey>][].
   The LSP node ID is the Bob public key.
+* `amount_sat` is the amount of this unspent transaction output.
 
 `change` is an ***optional*** object.
 If absent, it indicates that there is no change output.
@@ -789,19 +895,28 @@ If specified, the object has two keys:
   address that locks the change output.
   The LSP node ID is the Bob public key.
 
-`funding_output_script` is the `scriptPubKey` to be used for the
-funding output of the transaction.
+`funding` is an object with two keys:
+
+* `amount_sat` is the amount to put in the channel funding output.
+* `output_script` is the `scriptPubKey` of the channel funding
+  output.
 
 `order` is a string, indicating the order of the outputs.
+The client SHOULD uniformly select by random one of the valid
+values for `order`:
 
 * If `change` is not specified, `order` is a two-character string
-  composed of the characters `f` and `a` in any order:
+  composed of the characters `f` and `a` in any order.
+  The position of `f` indicates the position of the funding output,
+  and the position of `a` indicates the position of the anchor
+  output.
   * `"fa"` indicates the funding output is output index 0, and the
     anchor output is output index 1.
   * `"af"` indicates the anchor output is output index 0, and the
     funding output is output index 1.
 * If `change` is specified, `order` is a three-character string
-  composed of the characters `f`, `a`, and `c` in any order:
+  composed of the characters `f`, `a`, and `c` in any order.
+  The position of `c` indicates the position of the change output.
   * `"fac"` indicates the funding output is output index 0, the
     anchor output is output index 1, and the change output is
     output index 2.
@@ -811,12 +926,351 @@ funding output of the transaction.
   * `"cfa"`
   * `"caf"`
 
-TODO
+`nLockTime` is an unsigned 32-bit integer, indicating the value of
+the `nLockTime` field of the resulting funding transaction, and
+MUST be < 500,000,000 indicating it is a block height.
+
+The LSP, on receiving this call, performs the following validation:
+
+* `temporary_channel_id` MUST be equal to one provided in a
+  previous `c=.sip.intend_to_fund_channel` that has not yet timed
+  out, and the client has already sent `open_channel` and the LSP
+  has responded with an `accept_channel`.
+* `inputs` MUST have at least one entry.
+  * Each `prev_out` MUST be an unspent transaction output which
+    has been confirmed by at least `min_confirmations`.
+  * Each `prev_out` MUST be able to transition to the
+    `bob_provisionally_secured` state, as described in [Bob
+     Storage Requirements](#bob-storage-requirements).
+  * Each `prev_out` MUST have a "deadline" that is greater than
+    the smallest `max_deadline`.
+    The LSP MUST determine the shortest deadline among all the
+    spent transaction outputs and the corresponding `max_deadline`
+    and `min_feerate`.
+  * Each `prev_out` MUST have a `scriptPubKey` that corresponds to
+    the swap-in-potentiam address with the given `alice_pubkey`
+    and the LSP node ID as the Bob public key.
+* The `amount_sat` of the `funding` object MUST equal the
+  `funding_satoshis` from the `open_channel` message.
+
+The funding transaction is constructed as follows:
+
+* `nVersion = 2`
+* `nLockTime` equals the one specified in this call.
+* The inputs are ordered according to the order of `inputs`.
+  * `nSequence = 0xFFFFFFFD` (i.e. opt-in RBF)
+  * `prevOut` is the `prev_out` of the corresponding object.
+  * `scriptSig` is empty.
+* The outputs are ordered according to the `order` parameter.
+  * The funding output:
+    * The `value` matches the `amount_sat` of the `funding`
+      object.
+    * The `scriptPubKey` matches the `output_script` of the
+      `funding` object.
+  * The anchor output has `value` and `scriptPubKey` as specified
+    in the [Anchor Output](#anchor-output) section.
+  * The change output, if it exists:
+    * The `value` matches the `amount_sat` of the `change`
+      object.
+    * The `scriptPubKey` encodes the Taproot address for the
+      swap-in-potentiam address with the `alice_pubkey` of the
+      `change` object, and with the LSP node ID as the Bob public
+      key.
+
+To determine the "*expected minimum fee rate*" from the `inputs`
+of the funding transaction and the result of
+`c=.sip.get_sip_info`:
+
+* Iterate over the `inputs`:
+  * Find the input whose "deadline"
+    (`txo_confirmation_height + 4032 - current_blockheight`) is
+   the lowest.
+   * `txo_confirmation_height` is the height of the block that
+     confirms the transaction id specified in the `prev_out`.
+* Find the highest `max_deadline` that is still lower than the
+  above lowest deadline.
+* Get the corresponding `min_feerate`.
+
+The funding transaction MUST have a fee rate equal to or greater
+than the above expected minimum fee rate.
+
+`c=.sip.sign_funding_bob` has the following errors defined (error
+`code` in parentheses):
+
+* `unrecognized_temporary_channel_id` (1) - The specified
+  `temporary_channel_id` does not correspond to an ongoing
+  0-conf funding from a swap-in-potentiam address initiated by a
+  previous `c=.sip.intend_to_fund_channel`, or the LSP has not
+  responded with an `accept_channel` from an `open_channel`
+  specifying this temporary channel ID, or the LSP has already
+  received a previous valid `c=.sip.sign_funding_bob` call for
+  this temporary channel ID, or the channel open has timed out.
+* `invalid_prev_out` (2) - One or more of the `prev_out`s
+  specified in the `inputs` has one or more of the following
+  properties:
+  * It is not a confirmed unspent transaction output.
+  * It has been confirmed more than 4032 blocks.
+  * Its `scriptPubKey` does not encode the Taproot address for
+    the swap-in-potentiam address with the given `alice_pubkey`
+    and with the LSP node ID as the Bob public key.
+  * Its `value` does not match the given `amount_sat`.
+  * Its current `state` as specified in the section [Bob Storage
+    Requirements](#bob-storage-requirements) cannot validly
+    transition to `bob_provisionally_secured`.
+* `insufficient_confirms` (3) - One or more of the `prev_out`s
+  specified in the `inputs` has not been confirmed deeply enough.
+  The `error` `data` object contains a field `block_height`
+  containing the block height the LSP currently sees.
+  The client can retry the channel open later.
+* `deadline_too_near` (4) - One or more of the `prev_out`s
+  specified in the `inputs` has been confirmed so long ago that
+  the deadline is lower than the smallest `max_deadline` in the
+  previously-selected set of parameters from
+  `c=.sip.get_sip_info`.
+* `fee_too_small` (5) - The total of the outputs is greater than
+  the inputs, or the difference of the input amounts minus the
+  output amounts results in a fee that causes the entire
+  transaction to be below the `min_feerate` required.
+
+Otherwise, if all the above validation fails, the LSP performs
+the following atomically:
+
+* Validates that all `prev_out`s have `state`s that can transition
+  to `bob_provisionally_secured`, and transitions them to
+  `bob_provisionally_secured`.
+* If a change output exists on the funding transaction, sets its
+  `state` to `unconfirmed_alice_change`.
+* Creates signatures for all `inputs`, spending the corresponding
+  `prev_out` via the 2-of-2 Tapleaf Path, and signing using the
+  `SIGHASH_ALL` algorithm for SegWit.
+* Store the signatures, the funding transaction, and the funding
+  transaction ID into persistent storage.
+
+The LSP then returns an object like the following as the return
+value of the `c=.sip.sign_funding_bob` call, containing the
+signatures it generated:
+
+```JSON
+{
+  "bob_signatures": [
+    "faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450",
+    "aebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450f",
+    "ebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450fa"
+  ]
+}
+```
+
+`bob_signatures` is an array of strings.
+Its length equals the length of the `inputs` array in the
+parameters.
+
+Each string in `bob_signatures` is a hex dump containing the Taproot
+signature from the LSP as Bob, spending the 2-of-2 Tapleaf Path,
+and signing the funding transaction using the `SIGHASH_ALL`
+algorithm for SegWit.
+Each string is composed of 128 hex characters, each representing a
+64-byte signature.
+
+On success of the `c=.sip.sign_funding_bob` call, the client
+validates the following:
+
+* The length of `bob_signatures` MUST exactly equal the length of the
+  given `inputs` array.
+* Each signature in `bob_signatures` MUST validly sign the
+  corresponding input of the funding transaction via the 2-of-2
+  Tapleaf Path using `SIGHASH_ALL`.
+
+If the above validation fails, the client MUST abort the channel
+opening by sending a [BOLT 1 `error`  Message][] with the
+`temporary_channel_id`, and SHOULD report an LSP-side error to the
+user.
+
+Otherwise, if all `bob_signatures` returned by
+`c=.sip.sign_funding_bob` are valid, the client SHOULD continue
+with the channel opening flow, sending a [BOLT 2 `funding_created`
+Message][].
+
+The LSP validates the [BOLT 2 `funding_created` Message][] as
+follows:
+
+* The `funding_txid` MUST equal the transaction ID of the funding
+  transaction constructed above.
+* The `funding_output_index` MUST equal the index of the character
+  `f` in the `order` parameter of `c=.sip.sign_funding_bob`.
+
+The LSP MAY perform the above validation by validating the
+resulting permanent channel ID (which is the `funding_txid` with
+the last two bytes XORed with the `funding_output_index`).
+
+If the above validation fails, the LSP MUST send a [BOLT 1 `error`
+Message][] specifying the channel being opened.
+The LSP MAY send the `error` before or after sending the [BOLT 2
+`funding_signed` Message][] in response to the `funding_created`
+message, as long as the LSP sends the `error` *before* sending
+[BOLT 2 `channel_ready` Message][].
+
+> **Rationale** LSP implementations may be built on existing node
+> software that does not provide sufficiently fine-grained hooks
+> to allow the LSP implementation to immediately fail the channel
+> as soon as the node implementation receives `funding_created`.
+> Existing hooks might also not provide the `funding_txid` and
+> `funding_output_index` of the `funding_created` message, but
+> instead provide the final permanent channel ID, which is an
+> encoding of both fields.
+>
+> The client cannot send out any HTLCs to the LSP until after the
+> LSP sends `channel_ready`.
+> Thus, if the client violates the above validations, the LSP is
+> still safe as long as it fails the channel *before* sending
+> `channel_ready`.
+
+If the above validation succeeds, the LSP MUST send [BOLT 2
+`funding_signed` Message][].
+
+#### Providing Alice-side Signatures To Fund 0-conf Channel
+
+Once the client receives [BOLT 2 `funding_signed` Message][] from
+the LSP, the client can then complete the Alice-side signatures for
+the funding transaction, resulting in a completely signed funding
+transaction containing both the Alice and Bob signatures for each
+input.
+
+The client can now perform the following *in any order* or *in
+parallel*:
+
+* Send its own [BOLT 2 `channel_ready` Message][] to the LSP.
+* Broadcast the completely signed funding transaction.
+* Call `c=.sip.sign_funding_alice`, providing the Alice-side
+  signatures.
+
+The `c=.sip.sign_funding_alice` call takes the following
+parameters:
+
+```JSON
+{
+  "temporary_channel_id": "123456789abcdef123456789abcdef123456789abcdef123456789abcdef",
+  "alice_signatures": [
+    "ebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450fa",
+    "faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450",
+    "aebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450f"
+  ]
+}
+```
+
+`temporary_channel_id` is the temporary channel ID of this ongoing
+channel open.
+
+`alice_signatures` is an array of strings.
+Its length equals the length of the `inputs` array from the previous
+`c=.sip.sign_funding_bob` call, and therefore equals the number of
+inputs in the funding transaction.
+
+Each string in `alice_signatures` is a hex dump containing the Taproot
+signature from the client as Alice, spending the 2-of-2 Tapleaf Path,
+and signing the funding transaction using the `SIGHASH_ALL`
+algorithm for SegWit.
+Each string is composed of 128 hex characters, each representing a
+64-byte signature.
+
+On receiving the `c=.sip.sign_funding_alice` call, the LSP validates:
+
+* The `temporary_channel_id` MUST be that of an ongoing 0-conf
+  channel funding from a swap-in-potentiam that has had
+  `c=.sip.sign_funding_bob` successfully called, and the LSP has
+  sent `funding_signed`.
+* The length of `alice_signatures` MUST exactly equal the number of
+  inputs of the funding transaction.
+* Each signature in `alice_signatures` MUST validly sign the
+  corresponding input of the funding transaction via the 2-of-2
+  Tapleaf Path using `SIGHASH_ALL`.
+
+If the validation fails, the LSP fails this call and the LSP MUST
+`error` the channel.
+The following errors are defined for this call (error `code`s in
+parentheses):
+
+* `unrecognized_temporary_channel_id` (1) - The specified
+  `temporary_channel_id` does not correspond to an ongoing
+  0-conf funding from a swap-in-potentiam address where the
+  client has successfully called `c=.sip.sign_funding_bob`, or the
+  LSP has not responded with an `funding_signed` from an
+  `funding_created` specifying this temporary channel ID, or the
+  LSP has already received a previous valid
+  `c=.sip.sign_funding_alice` call for this temporary channel ID,
+  or the channel open has timed out.
+* `invalid_alice_signatures` (2) - The length of `alice_signatures`
+  is incorrect, or at least one of the `alice_signatures` is not a
+  valid signature for the funding transaction.
+
+Otherwise, the LSP performs the following atomically:
+
+* Set all inputs of the funding transaction to `state`
+  `bob_secured`.
+* Store all signatures (client as Alice and LSP as Bob) into
+  persistent storage, as well as the funding transaction.
+
+Then, the LSP returns the following object from
+`c=.sip.sign_funding_alice`:
+
+```JSON
+{ }
+```
+
+Once the LSP succeeds the call, the LSP MUST send a [BOLT 2
+`channel_ready` Message][] for the channel, and MUST remove any
+timeout it created in `c=.sip.intend_to_fund_channel`.
+
+Once the LSP and client have exchanged `channel_ready`, the
+0-conf channel funding from swap-in-potentiam process has
+completed.
+
+#### Reconnections During 0-conf Channel Funding
+
+Until the LSP has sent `funding_signed` and the client has
+received it, any disconnection and reconnection means that the
+channel open has aborted, and the client has to restart the
+funding.
+
+In such a case, the LSP can simply consider the channel funding
+to have aborted.
+
+However, once the LSP has sent `funding_signed`, the BOLT
+specification considers the channel to be "real" even across
+disconnections, and the LSP will initiate
+`channel_reestablish` for the channel.
+
+In the case that LSP has sent `funding_signed` already before a
+disconnection and reconnection occurs, and the LSP has not
+received, validated, and persisted the parameters of
+`c=.sip.sign_funding_alice`, the LSP MUST explicitly `error` the
+channel explicitly on reconnection.
+
+The LSP restarting would cause a disconnection as well, and
+would also be an abort.
+
+On abort, the LSP atomically performs the following:
+
+* If `c=.sip.sign_funding_bob` was already performed:
+  * Moves the `state` of the funding transaction inputs to
+    `bob_retriable`.
+  * Removes the change output, if any, `state` (setting it back to
+    "Unknown" or not present in its persisted map).
+  * Removes any persistently stored data about the funding
+    transaction.
 
 [SIP]: https://lists.linuxfoundation.org/pipermail/lightning-dev/2023-January/003810.html
 [BIP-327]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki
 [BIP-327 PubKey Agg]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#user-content-Public_Key_Aggregation
 [BIP-341]: https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki
-[BOLT 2 `open_channel` Message]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message
+[BOLT 1 `error` Message]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-error-and-warning-messages
 [BOLT 2 `accept_channel` Message]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-accept_channel-message
+[BOLT 2 `channel_ready` Message]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-channel_ready-message
+[BOLT 2 `funding_created` Message]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-funding_created-message
+[BOLT 2 `funding_signed` Message]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-funding_signed-message
+[BOLT 2 `open_channel` Message]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-open_channel-message
 [BOLT 3 Anchor Output]: https://github.com/lightning/bolts/blob/master/03-transactions.md#to_local_anchor-and-to_remote_anchor-output-option_anchors
+
+[<LSPS0 datetime>]: ../LSPS0/common-schemas.md#link-lsps0datetime
+[<LSPS0 onchain fee rate>]: ../LSPS0/common-schemas.md#link-lsps0onchain_fee_rate
+[<LSPS0 outpoint>]: ../LSPS0/common-schemas.md#link-lsps0outpoint
+[<LSPS0 pubkey>]: ../LSPS0/common-schemas.md#link-lsps0pubkey
