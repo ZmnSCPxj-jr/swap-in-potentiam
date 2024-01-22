@@ -34,10 +34,6 @@ This specification describes:
 * For client is Alice, LSP is Bob:
   * A way for Alice / client to request Bob / LSP to sign an arbitrary
     onchain transaction spending a swap-in-potentiam address.
-  * A way for Alice / client to request Bob / LSP to accept an HTLC funded by
-    a swap-in-potentiam address, so that Bob / LSP then forwards the HTLC back
-    to Alice / client on a channel between them, so that Alice / client can put
-    the funds in a Lightning channel.
   * A way for Alice / client to request Bob / LSP to accept a 0-conf channel
     funded by a swap-in-potentiam address, such that Bob / LSP can safely
     accept funds over the new 0-conf channel without any double-spend risk.
@@ -85,9 +81,8 @@ The LSP can take on the Alice or Bob role.
 
 ## Constructing Addresses And Transactions
 
-Swap-in-potentiam addresses are owned by Alice, but may be used to offer an
-onchain HTLC to Bob, which Bob can then claim by offering an offchain, Lightning
-HTLC.
+Swap-in-potentiam addresses are owned by Alice, but may be used to
+offer funds to Bob in exchange for Lightning Network capacity.
 Thus, there are two keypairs, one for each participant:
 
 * Alice per-address keypair `A = a * G`.
@@ -119,8 +114,7 @@ The above are the leaves in the Taproot tree, with leaf version `0xC0`.
 ### Computing The Internal Public Key
 
 The internal public key, `Q`, is derived from `P[0]` and `P[1]`, using
-the [public key aggregation scheme][BIP-327 PubKey Agg] described in
-[BIP-327][].
+the [BIP-327 public key aggregation scheme][BIP-327 PubKey Agg].
 
 The public key aggregation scheme is order-dependent; the order in which
 the public keys are given to the public key aggregation is `P[0], P[1]`.
@@ -241,10 +235,11 @@ Transactions which fund Lightning channels or fund onchain swaps MUST
 have an anchor output controlled by Bob.
 
 > **Rationale** Bob needs to ensure that the Lightning channel funding
-> transaction, or onchain HTLC, spending from swap-in-potentiam
-> addresses, are confirmed before the timeout of the swap-in-potentiam
+> transaction spending from swap-in-potentiam addresses, are
+> confirmed before the timeout of the swap-in-potentiam
 > transaction output.
-> Thus, it must be given an anchor output for its own security.
+> Thus, it must be given an anchor output for its own security, so
+> that it can pay for additional fees to confirm the transaction.
 
 Anchor outputs have an amount of 330 satoshis, and has a Taproot
 `scriptPubKey`.
@@ -260,45 +255,6 @@ Thus, a channel funding transaction has the following outputs:
 * The channel funding outpoint.
 * The Bob anchor output.
 * (Optional) The Alice change output.
-
-Similarly, an onchain HTLC transaction would have three outputs:
-
-* The onchain HTLC.
-* The Bob anchor output.
-* (Optional) The Alice change output.
-
-### Onchain HTLC
-
-One possible option for 0-conf Lightning operations is to transfer
-control of the onchain funds to Bob, by instantiating an onchain
-HTLC funded from swap-in-potentiam funds, and having Bob immediately
-send an in-Lightning HTLC towards Alice, or to any destination that
-Alice wants to use.
-
-The HTLC output is a Taproot output (SegWit v1 address).
-The HTLC has Bob taking the hashlock branch with
-SHA256 hash `h` and Alice taking the timelock branch that ends at
-absolute blockheight `t`.
-
-* Alice generates a per-swap keypair, the public key is labelled
-  `A[swap]`.
-* Bob similarly generates a per-swap keypair, the public key is
-  labelled `B[swap]`.
-* The lesser of `A[swap]` and `B[swap]`, in the lexographical
-  order of their 33-byte compressed SEC encoding, is `P[swap][0]`
-  and the other is `P[swap][1]`.
-* Generate the `Q[swap]` internal public key from the
-  [BIP-327 PubKey Agg][] of `P[swap][0]` and `P[swap][1]`, in
-  that order.
-* Generate two TapScripts:
-  * `OP_HASH160 <RIPEMD160(h)> OP_EQUALVERIFY <B[swap]> OP_CHECKSIG`
-    (hashlock branch)
-  * `<t> OP_CHECKLOCKTIMEVERIFY OP_DROP <A[swap]> OP_CHECKSIG`
-    (timelock branch)
-* Assemble the Merkle Tree Root as described in [BIP-341][] and
-  tweak the internal public key to generate the HTLC address.
-
-TODO
 
 ## Bob Storage Requirements
 
@@ -354,7 +310,7 @@ equivalent representation:
 
 Alice MAY request either an onchain operation or a 0-conf Lightning
 operation, when specifying a swap-in-potentiam UTXO.
-Bob MUST atomically do:
+Bob MUST **atomically** do:
 
 * When Alice requests an onchain operation on a swap-in-potentiam
   UTXO, if the state is below, Bob MUST:
@@ -464,33 +420,161 @@ Bob role, the client can:
 
 ### Spending Client Swap-in-potentiam UTXOs Onchain
 
-The client can spend directly from a onchain UTXO protected by a
-swap-in-potentiam address, by asking the LSP, as Bob, to sign an
-arbitrary transaction spending it.
+The client can spend directly from one or more onchain UTXOs
+protected by swap-in-potentiam addresses, by asking the LSP, as
+Bob, to sign an arbitrary transaction spending them.
+
+This is done by using a [BIP-174][] PSBT.
+The LSP takes on the [BIP-174 Signer][] role only, signing only
+witness inputs that spend from swap-in-potentiam addresses
+where the LSP is Bob.
 
 The client requests the LSP to perform such operations by calling
-`c=.sip.sign_sip_onchain`, which has the parameters:
+`c=.sip.sign_psbt_bob`, which has the parameters:
 
 ```JSON
 {
-  "todo": "todo"
+  "psbt": "cHNidP8BAAAA"
 }
 ```
 
-TODO
+`psbt` is a non-finalized [BIP-174][] PSBT, in Base64 format, as
+specified in BIP-174.
+
+The client MUST use a PSBT Version 2 ([BIP-370][]) or later.
+
+The client MUST ensure that, after the LSP fully signs all
+swap-in-potentiam inputs (64 additional bytes for signature for
+`SIGHASH_ALL`, or 65 for other `SIGHASH` flags), the resulting
+PSBT does not exceed 63,000 Base64 characters.
+
+> **Rationale** LSPS0 requests are limited by the payload size
+> of BOLT 8, which is 65535 bytes, in addition to extra overhead
+> in the JSON-RPC format for requests.
+>
+> Signing is the only operation the LSP does, and it strictly
+> only increases the size of the PSBT.
+> The returned PSBT is thus either the same length or longer than
+> the PSBT in the input parameters of `c=.sip.sign_psbt_bob`, so a
+> limit on the returned PSBT size is also a limit on the input
+> PSBT size.
+
+The client MAY create any transaction in the PSBT, but SHOULD NOT
+use this interface to fund a channel to the LSP.
+The LSP MUST NOT impose any rules on the client-generated
+transaction, not even standardness, blockchain validity, or fee
+rate.
+
+> **Rationale** The LSP always marks any transaction outputs
+> used in this interface as having the state `alice_moved`, and
+> thus will never accept such transaction outputs to back 0-conf
+> Lightning operations.
+> The client is thus free to use such transaction outputs as it
+> sees fit, including in non-standard or low-fee transactions
+> that would require out-of-mempool communication with a miner to
+> confirm.
+>
+> This flexibility would allow the client to directly use
+> swap-in-potentiam UTXOs in onchain operations, such as PayJoin.
+
+On receiving this call, the LSP performs the following validation:
+
+* `psbt` is parseable as a PSBT in Base64 format, and is valid.
+* The `PSBT_GLOBAL_VERSION` is a version supported by the LSP.
+  * The LSP MUST support version 2.
+  * The LSP MUST reject version 0.
+* The `psbt` is non-final (i.e. none of the inputs have
+  `PSBT_IN_FINAL_SCRIPTSIG` (`0x07`) or
+  `PSBT_IN_FINAL_SCRIPTWITNESS` (`0x08`) key types).
+
+If the above validations fail, `c=.sip.sign_psbt_bob` returns one
+of the following errors (error `code` in parentheses):
+
+* `invalid_psbt` (1) - The `psbt` is not parseable as a Base64
+  format PSBT, or is otherwise invalid.
+* `unsupported_psbt_version` (2) - The PSBT version is not
+  supported.
+* `final_psbt` (3) - The PSBT already has a finalized input.
+
+If the above validations succeed, the LSP **atomically** performs
+the following:
+
+* For each input of the PSBT:
+  * Check if the input is for a swap-in-potentiam spend with the
+    LSP as Bob:
+    * The input has a [BIP-371][] `PSBT_IN_TAP_LEAF_SCRIPT`
+      (`0x15`) key type, where the value is for a tapleaf version
+      `0xC0` SCRIPT that matches the template
+      `<P[0]> OP_CHECKSIGVERIFY <P[1]> OP_CHECKSIG`,
+      `P[0] < P[1]` when compared lexicographically, and
+      either `P[0]` or `P[1]` equals the LSP node ID.
+  * If the above check passes, for this input, the LSP determines
+    the previous transaction output from the [BIP-370][]
+    `PSBT_IN_PREVIOUS_TXID` (`0x0e`) and `PSBT_IN_OUTPUT_INDEX`
+    (`0x0f`) key types.
+    * If the `state`, as described in the section [Bob Storage
+      Requirements](#bob-storage-requirements), cannot validly
+      transition to `alice_moved`, then fail this call and roll
+      back any other transitions of `state` for previous inputs.
+    * Otherwise, transition the state to `alice_moved`.
+    * *IMPORTANT* It is not necessary for any output-to-spend to
+      be confirmed, or on a transaction on the mempool, or in the
+      UTXO set known by the LSP.
+      The only required validation is that the `state` can validly
+      transition to `alice_moved`.
+  * For this input, check for a [BIP-174][] `PSBT_IN_SIGHASH_TYPE`
+    (`0x03`).
+    * If it does not exist, sign with `SIGHASH_ALL`.
+    * Otherwise, check that the given flag is supported by the
+      LSP.
+      The LSP MUST support at least the following combinations:
+      * `SIGHASH_DEFAULT` (treated as equivalent to `SIGHASH_ALL`)
+      * `SIGHASH_ALL`
+      * `SIGHASH_SINGLE`
+      * `SIGHASH_NONE`
+      * `SIGHASH_ALL | SIGHASH_ANYONECANPAY`
+      * `SIGHASH_SINGLE | SIGHASH_ANYONECANPAY`
+      * `SIGHASH_NONE | SIGHASH_ANYONECANPAY`
+    * Sign using the specified `SIGHASH`, and insert a new
+      [BIP-371][] `PSBT_IN_TAP_SCRIPT_SIG` (`0x14`) with the
+      LSP node ID and the previously-detected SCRIPT.
+
+If an input is not in a valid `state` as described in [Bob Storage
+Requirements](#bob-storage-requirements), then
+`c=.sip.sign_psbt_bob` fails with the following error (error `code`
+in parentheses):
+
+* `utxo_not_valid` (4) - one or more of the inputs to be signed
+  are currently in use for a 0-conf Lightning operation.
+
+Otherwise, the LSP has scanned all PSBT inputs and signed all
+inputs that are a swap-in-potentiam address with itself as Bob,
+and the `c=.sip.sign_psbt_inputs` returns:
+
+```JSON
+{
+  "signed_psbt": "cHNidP8BSSSSAAAA"
+}
+```
+
+`signed_psbt` is a non-finalized [BIP-174][] PSBT, in Base64
+format, with the detected swap-in-potentiam inputs signed by the
+LSP.
+
+The LSP MUST only act as a [BIP-174 Signer][].
 
 On successful return, the LSP has, as Bob, updated its
-persistently-stored `state` of the spent swap-in-potentiam UTXO to
+persistently-stored `state` of all spent swap-in-potentiam UTXOs to
 `alice_moved`.
-This state allows the client to repeat the `c=.sip.sign_sip_onchain`
-call with the same UTXO (for example, to RBF a transaction, or
-idempotency in case the client disconnects or crashes before it can
-receive the signature from the LSP).
-However, spending a swap-in-potentiam UTXO to an onchain address
-also prevents it from being used to fund a 0-conf Lightning
-operation in the future.
 
-TODO
+> **Non-normative** An `alice_moved` transaction output can validly
+> transition to `alice_moved`.
+> Thus, in case of a disconnection between the client sending the
+> `c=.sip.sign_psbt_bob` request and the LSP responding with the
+> `c=.sip.sign_psbt_bob` response, where the client is unable to
+> receive the response, the client can repeat the request on
+> reconnection, and the LSP would still return a validly-signed
+> PSBT.
 
 ### Determining LSP Parameters For 0-Conf Lightning
 
@@ -646,13 +730,9 @@ This means:
 * If the deadline is 1008 to 4032 blocks, the LSP demands
   an onchain feerate of 10,000 sat/kWU.
 
-The specified onchain feerate MUST be used as the minimum
-onchain feerate for funding channel opens and onchain
-HTLCs.
-For onchain-to-offchain swaps, the onchain feerate also
-determines how much the LSP will deduct from the onchain
-amount, prior to sending an in-Lightning HTLC to the
-client.
+The specified onchain feerate MUST be used as the minimum onchain
+feerate for funding channel opens via the 0-conf Lightning channel
+funding flow.
 
 If a client has an existing swap-in-potentiam UTXO, and its
 deadline goes below the deadline of the LSP it committed to, then
@@ -829,7 +909,7 @@ conditions below are true:
 
 #### Requesting Bob-side Signatures To Fund 0-conf Channel
 
-After the client receives the [BOLT #2 `accept_channel`
+After the client receives the [BOLT 2 `accept_channel`
 Message][] from the above sequence, it requests signatures from
 the LSP as Bob using the `c=.sip.sign_funding_bob` call.
 
@@ -1032,8 +1112,13 @@ than the above expected minimum fee rate.
   output amounts results in a fee that causes the entire
   transaction to be below the `min_feerate` required.
 
-Otherwise, if all the above validation fails, the LSP performs
-the following atomically:
+In addition, if `c=.sip.sign_funding_bob` fails for a
+`temporary_channel_id` with an error `code` other than
+`unrecognized_temporary_channel_id` (1), the LSP and client MUST
+send a [BOLT 2 `error` Message][] of the channel being opened.
+
+Otherwise, if all the above validation passes, the LSP performs
+the following **atomically**:
 
 * Validates that all `prev_out`s have `state`s that can transition
   to `bob_provisionally_secured`, and transitions them to
@@ -1202,7 +1287,12 @@ parentheses):
   is incorrect, or at least one of the `alice_signatures` is not a
   valid signature for the funding transaction.
 
-Otherwise, the LSP performs the following atomically:
+In addition, if `c=.sip.sign_funding_alice` fails for a
+`temporary_channel_id` with an error `code` other than
+`unrecognized_temporary_channel_id` (1), the LSP and client MUST
+send a [BOLT 2 `error` Message][] of the channel being opened.
+
+Otherwise, the LSP performs the following **atomically**:
 
 * Set all inputs of the funding transaction to `state`
   `bob_secured`.
@@ -1248,7 +1338,7 @@ channel explicitly on reconnection.
 The LSP restarting would cause a disconnection as well, and
 would also be an abort.
 
-On abort, the LSP atomically performs the following:
+On abort, the LSP **atomically** performs the following:
 
 * If `c=.sip.sign_funding_bob` was already performed:
   * Moves the `state` of the funding transaction inputs to
@@ -1259,9 +1349,13 @@ On abort, the LSP atomically performs the following:
     transaction.
 
 [SIP]: https://lists.linuxfoundation.org/pipermail/lightning-dev/2023-January/003810.html
+[BIP-174]: https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki
+[BIP-174 Signer]: https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki#user-content-Signer
 [BIP-327]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki
 [BIP-327 PubKey Agg]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#user-content-Public_Key_Aggregation
 [BIP-341]: https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki
+[BIP-370]: https://github.com/bitcoin/bips/blob/master/bip-0370.mediawiki
+[BIP-371]: https://github.com/bitcoin/bips/blob/master/bip-0371.mediawiki
 [BOLT 1 `error` Message]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-error-and-warning-messages
 [BOLT 2 `accept_channel` Message]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-accept_channel-message
 [BOLT 2 `channel_ready` Message]: https://github.com/lightning/bolts/blob/master/02-peer-protocol.md#the-channel_ready-message
