@@ -357,7 +357,7 @@ TODO
 
 TODO
 
-### Spending Via Tinelock Tapleaf Path
+### Spending Via Timelock Tapleaf Path
 
 TODO
 
