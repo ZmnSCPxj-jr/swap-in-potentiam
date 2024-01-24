@@ -37,16 +37,6 @@ This specification describes:
   * A way for Alice / client to request Bob / LSP to accept a 0-conf channel
     funded by a swap-in-potentiam address, such that Bob / LSP can safely
     accept funds over the new 0-conf channel without any double-spend risk.
-* For LSP is Alice, client is Bob:
-  * A way for Alice / LSP to signal to Bob / client that it wants to open a
-    0-conf channel funded by a swap-in-potentiam address, without Alice / LSP
-    being required to provide an LSPS3 Promise To Unconditionally Fund 0-conf
-    for that channel, as the new 0-conf channel has no double-spend risk.
-* For LSP is Bob, client is third-party:
-  * A way for Bob / LSP to signal an arbitrary client that it wants to
-    forward a swap from a different client (acting as Alice), with the
-    LSP being required to provide an LSPS3 Promise To Unconditionally Fund
-    0-conf the swap between it and the third-party client.
 
 > **Rationale** Address reuse is already expected by experienced Bitcoin users,
 > thus using this protocol to generate an onchain Bitcoin address that can be
@@ -64,6 +54,7 @@ This specification describes:
 > owned by the LSP-as-Alice, wait for the client to come online, then swap the fund
 > with client-as-Bob to get liquidity from LSP to client, then complete the offline
 > receive with the client.
+> Future revisions of this specification may describe such flows.
 
 ### Actors
 
@@ -92,10 +83,23 @@ Thus, there are two keypairs, one for each participant:
   - `b` and `b * G` are simply the private and public keys of the Lightning
     Network node ID of Bob.
 
-The public keys are sorted based on the lexographic ordering of the 33-byte
-compressed SEC representation.
-These are `P[0]` and `P[1]`, with `P[0]` being whichever of `A` or `B` is
-lesser in lexicographic comparison of their 33-byte compressed SEC
+Taproot mandates the use of [BIP-340][] X-only public keys, which
+are equivalent to full SECP256K1 public keys that have even Y
+coordinate, or, equivalently, start with byte `0x02` in a 33-byte
+SEC compressed format.
+As such, both `A` and `B` are converted to even Y coordinates and
+X-only public keys.
+
+This means that for Bob nodes whose Lightning Network node ID
+starts with `0x03`, Bob uses the even public key instead and
+negates the private key for the node ID before signing.
+
+The public keys `A` and `B` are sorted based on the lexicographic
+ordering of the X-coordinate in big-endian form.
+This is equivalent to the lexicographic ordering of the [BIP-340][]
+X-only public key.
+These are `P[0]` and `P[1]`, with `P[0]` being whichever of `A` or
+`B` is lesser in lexicographic comparison of their X-only 32-byte
 representation, and `P[1]` being the other.
 
 We create two tapscripts: one is a two-of-two between Alice and Bob, the
@@ -118,6 +122,17 @@ the [BIP-327 public key aggregation scheme][BIP-327 PubKey Agg].
 
 The public key aggregation scheme is order-dependent; the order in which
 the public keys are given to the public key aggregation is `P[0], P[1]`.
+
+The public key aggregation scheme uses "plain" public keys, which
+may have odd Y coordinates.
+However, we already converted `A` and `B` to X-only public keys,
+which always have even Y coordinates, before sorting them into
+`P[0]` and `P[1]`.
+Thus, the public key aggregation scheme will receive "plain" public
+keys with even Y coordinates, even if Bob Lightning Network node ID
+has an odd Y coordinate.
+
+* `Q = KeyAgg([0x02 || P[0], 0x02 || P[1]])`
 
 > **Rationale** The internal public key is an aggregate of the Alice and
 > Bob public keys, which has the following advantages.
@@ -158,8 +173,8 @@ the public keys are given to the public key aggregation is `P[0], P[1]`.
 >     By being forced to use hardened derivation, Alice then cannot create a
 >     "watch-only wallet" that knows only the root public key;
 >     hardened derivation requires knowledge of the root private key.
->     Mandating the use of some tweak would also prevent Alice from using a
->     watch-only wallet.
+>     Mandating the use of some non-identity tweak would thus prevent Alice
+>     from using a watch-only wallet.
 >     Making the tweak optional would be additional complication to the
 >     protocol.
 >   * Similarly if the tweak were derived by Diffie-Hellman between
@@ -207,10 +222,12 @@ The Merkle Tree root is then:
 * `r = tagged_hash("TapBranch", (h[0] || h[1]))`
 
 The internal public key, `Q`, described in the previous section,
-should then be tweaked, as follows, to generate the Taproot public
-key:
+should then be tweaked according to the `ApplyTweak` algorithm
+of [BIP-327 tweaking of aggregate public key][BIP-327 Tweak PubKey
+Agg] to generate `S`, with `is_xonly_t` being `true`.
 
-* `S = Q + tagged_hash("TapTweak", Q || r)`
+* `S = ApplyTweak(Q, tagged_hash("TapTweak", GetXonlyPubkey(Q) || r), true)`
+  * `GetXonlyPubkey` is described in [BIP-327][].
 
 Determine the sign of the Y coordinate of `S` (this is necessary later
 on spending), then extract the X coordinate.
@@ -249,6 +266,10 @@ The anchor output is described in [BOLT 3 Anchor Output][].
 In this context, the `remote_funding_pubkey` is the Bob key
 (Bob public node ID).
 Only Bob is given an anchor output.
+
+In this specific context only, the Bob key `B` is the "plain"
+public key and may have odd Y coordinate (i.e. start with `0x03`
+in the 33-byte SEC serialization).
 
 Thus, a channel funding transaction has the following outputs:
 
@@ -412,11 +433,9 @@ Bob role, the client can:
   output to an arbitrary onchain transaction, without putting
   funds into Lightning.
 * Determine what the LSP requires in order to accept
-  swap-in-potentiam addresses for 0-conf Lightning transactions.
+  swap-in-potentiam addresses for 0-conf Lightning operations.
 * Spend one or more confirmed swap-in-potentiam transaction
   outputs to a new 0-conf channel with the LSP.
-* Spend one or more confirmed swap-in-potentiam transaction
-  outputs to an onchain-to-offchain swap with the LSP.
 
 ### Spending Client Swap-in-potentiam UTXOs Onchain
 
@@ -438,8 +457,7 @@ The client requests the LSP to perform such operations by calling
 }
 ```
 
-`psbt` is a non-finalized [BIP-174][] PSBT, in Base64 format, as
-specified in BIP-174.
+`psbt` is a [BIP-174][] PSBT, in Base64 format.
 
 The client MUST use a PSBT Version 2 ([BIP-370][]) or later.
 
@@ -477,15 +495,24 @@ rate.
 > This flexibility would allow the client to directly use
 > swap-in-potentiam UTXOs in onchain operations, such as PayJoin.
 
+The client does not need to include the full previous transaction
+on each input.
+The LSP MUST NOT require the previous transaction and MUST NOT
+perform any validation on the previous transcation output being
+valid.
+
+> **Rationale** The LSP has no stake in the output being spent,
+> as long as, after it has signed for and returned the PSBT, it
+> has moved the `state`s of any transaction output signed, as
+> described in [Bob Storage
+> Requirements](#bob-storage-requirements), to `alice_moved`.
+
 On receiving this call, the LSP performs the following validation:
 
 * `psbt` is parseable as a PSBT in Base64 format, and is valid.
 * The `PSBT_GLOBAL_VERSION` is a version supported by the LSP.
   * The LSP MUST support version 2.
   * The LSP MUST reject version 0.
-* The `psbt` is non-final (i.e. none of the inputs have
-  `PSBT_IN_FINAL_SCRIPTSIG` (`0x07`) or
-  `PSBT_IN_FINAL_SCRIPTWITNESS` (`0x08`) key types).
 
 If the above validations fail, `c=.sip.sign_psbt_bob` returns one
 of the following errors (error `code` in parentheses):
@@ -494,12 +521,14 @@ of the following errors (error `code` in parentheses):
   format PSBT, or is otherwise invalid.
 * `unsupported_psbt_version` (2) - The PSBT version is not
   supported.
-* `final_psbt` (3) - The PSBT already has a finalized input.
 
 If the above validations succeed, the LSP **atomically** performs
 the following:
 
 * For each input of the PSBT:
+  * If the input is finalized (i.e. it has [BIP-174][]
+    `PSBT_IN_FINAL_SCRIPTSIG` or `PSBT_IN_FINAL_SCRIPTWITNESS`
+    key types), skip.
   * Check if the input is for a swap-in-potentiam spend with the
     LSP as Bob:
     * The input has a [BIP-371][] `PSBT_IN_TAP_LEAF_SCRIPT`
@@ -557,11 +586,17 @@ and the `c=.sip.sign_psbt_inputs` returns:
 }
 ```
 
-`signed_psbt` is a non-finalized [BIP-174][] PSBT, in Base64
-format, with the detected swap-in-potentiam inputs signed by the
-LSP.
+`signed_psbt` is a [BIP-174][] PSBT, in Base64 format, with the
+detected swap-in-potentiam inputs signed by the LSP.
 
 The LSP MUST only act as a [BIP-174 Signer][].
+The LSP MUST NOT finalize any inputs it signs for.
+The client is responsible for finalizing inputs signed by the LSP.
+
+> **Rationale** This allows the client to request signatures from
+> the LSP before filling its own signatures.
+> This is appropriate as the input is semantically owned by the
+> client as Alice.
 
 On successful return, the LSP has, as Bob, updated its
 persistently-stored `state` of all spent swap-in-potentiam UTXOs to
@@ -883,6 +918,8 @@ the step where the LSP receives and validates a corresponding
   `c=.sip.sign_funding_alice` calls for this channel.
 * MAY reject an `open_channel` of the specified
   `temporary_channel_id` if it is a 0-conf channel open.
+* MUST roll back any `state` changes that occurred during a
+  `ce=.sip.sign_funding_bob` call.
 
 > **Rationale** The timeout exists to prevent a client from making
 > multiple `c=.sip.intend_to_fund_channel` calls without actually
@@ -1332,27 +1369,35 @@ disconnections, and the LSP will initiate
 In the case that LSP has sent `funding_signed` already before a
 disconnection and reconnection occurs, and the LSP has not
 received, validated, and persisted the parameters of
-`c=.sip.sign_funding_alice`, the LSP MUST explicitly `error` the
-channel explicitly on reconnection.
+`c=.sip.sign_funding_alice` *before* the disconnection, the LSP
+MUST explicitly `error` the channel explicitly on reconnection.
 
 The LSP restarting would cause a disconnection as well, and
 would also be an abort.
+
+Finally, if the LSP started a timeout on
+`c=.sip.intend_to_fund_channel` and the timeout is reached before
+the LSP has processed `c=.sip.sign_funding_alice`, the LSP MUST
+also treat it as an abort.
 
 On abort, the LSP **atomically** performs the following:
 
 * If `c=.sip.sign_funding_bob` was already performed:
   * Moves the `state` of the funding transaction inputs to
     `bob_retriable`.
-  * Removes the change output, if any, `state` (setting it back to
-    "Unknown" or not present in its persisted map).
+  * Removes `state` of the change output, if any (setting it back
+    to "Unknown" or not present in its persisted map).
   * Removes any persistently stored data about the funding
     transaction.
+* Send an `error` for the channel.
 
 [SIP]: https://lists.linuxfoundation.org/pipermail/lightning-dev/2023-January/003810.html
 [BIP-174]: https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki
 [BIP-174 Signer]: https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki#user-content-Signer
 [BIP-327]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki
 [BIP-327 PubKey Agg]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#user-content-Public_Key_Aggregation
+[BIP-327 Tweak PubKey Agg]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#tweaking-the-aggregate-public-key
+[BIP-340]: https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki
 [BIP-341]: https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki
 [BIP-370]: https://github.com/bitcoin/bips/blob/master/bip-0370.mediawiki
 [BIP-371]: https://github.com/bitcoin/bips/blob/master/bip-0371.mediawiki
