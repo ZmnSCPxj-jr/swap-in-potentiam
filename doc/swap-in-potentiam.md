@@ -91,8 +91,10 @@ As such, both `A` and `B` are converted to even Y coordinates and
 X-only public keys.
 
 This means that for Bob nodes whose Lightning Network node ID
-starts with `0x03`, Bob uses the even public key instead and
-negates the private key for the node ID before signing.
+starts with `0x03`, when generating and spending from
+swap-in-poteentiam addresses, Bob uses the even-Y public key
+instead and negates the private key for the node ID before
+signing.
 
 The public keys `A` and `B` are sorted based on the lexicographic
 ordering of the X-coordinate in big-endian form.
@@ -521,13 +523,13 @@ The following state transitions are also needed depending on if a
 *aborts*:
 
 * If the state of a swap-in-potentiam UTXO is
-  `bob_provisionally_secured`, and it is used in a channel funding
-  transaction that does not reach Bob (role taken by an LSP)
-  receiving the `c=.sip.sign_funding_alice` API request, before
-  the connection is interrupted (and thus aborting the channel
-  open), then Bob MUST set its state to `bob_retriable`.
-  - This includes the case where Bob / LSP restarts during channel
-    opening before receiving `c=.sip.sign_funding_alice`.
+  `bob_provisionally_secured`, and it is spent in a 0-conf
+  Lightning operation, then Bob MUST set its state to
+  `bob_retriable`.
+* If the state of a swap-in-potentiam UTXO is
+  `unconfirmed_alice_change`, and it is created by (is an output
+  of) a 0-conf Lightning operation, then Bob MUST set its state to
+  Unknown (i.e. delete its entry).
 
 The following state transitions are also needed depending on if a
 0-conf Lightning operation described in this specification
@@ -1505,6 +1507,35 @@ On abort, the LSP **atomically** performs the following:
   * Removes any persistently stored data about the funding
     transaction.
 * Send an `error` for the channel.
+
+#### Ensuring Funding Transaction Confirmation
+
+The LSP SHOULD monitor the funding transaction while it is
+unconfirmed.
+
+The LSP takes the "deadline" of the shortest-deadline input spent
+in the funding transaction.
+If the deadline is less than some LSP-selected threshold while the
+funding transaction is unconfirmed, the LSP SHOULD use the anchor
+output of the funding transaction to increase the offerred fee for
+the funding transaction.
+The LSP will have to spend the anchor output, plus another UTXO it
+controls, into the CPFP transaction.
+The LSP SHOULD opt-in to RBF for the CPFP transaction, and the LSP
+SHOULD increase the fee paid by the CPFP transaction as blocks
+arrive where the funding transaction is not confirmed, up to the
+total amount of the channel, minus one satoshi, when the deadline
+is 1.
+The LSP MAY spend the anchor outputs of multiple funding
+transactions into a single CPFP transaction.
+
+If the LSP performs the above monitoring of unconfirmed funding
+transactions, it SHOULD stop increasing the CPFP transaction fee
+once the funding transaction is confirmed at least once.
+The LSP SHOULD stop monitoring the funding transaction once the
+funding transaction is confirmed "deeply enough".
+The LSP SHOULD use its normal `minimum_depth` setting to judge as
+"deeply enough".
 
 [SIP]: https://lists.linuxfoundation.org/pipermail/lightning-dev/2023-January/003810.html
 [BIP-174]: https://github.com/bitcoin/bips/blob/master/bip-0174.mediawiki
