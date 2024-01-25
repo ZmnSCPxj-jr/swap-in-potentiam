@@ -117,6 +117,26 @@ The above are the leaves in the Taproot tree, with leaf version `0xC0`.
 > better prepared for the security tradeoffs depending on the depth
 > of the received funds.
 
+The tapleaf scripts, when serialized:
+
+* `<P[0]> OP_CHECKSIGVERIFY <P[1]> OP_CHECKSIG`
+  - `0x20` (push 32 bytes)
+  - 32 bytes: The X coordinate of `P[0]` in big-endian order
+  - `0xAD` (`OP_CHECKSIGVERIFY`)
+  - `0x20` (push 32 bytes)
+  - 32 bytes: The X coordinate of `P[1]` in big-endian order
+  - `0xAC` (`OP_CHECKSIG`)
+  - 68 witness bytes total
+* `<4032 blocks> OP_CHECKSEQUENCEVERIFY OP_DROP <A> OP_CHECKSIG`
+  - `0x03` (push 3 bytes)
+  - `0xC0 0x0F 0x00` (4032, little-endian)
+  - `0xB2` (`OP_CHECKSEQUENCEVERIFY`)
+  - `0x75` (`OP_DROP`)
+  - `0x20` (push 32 bytes)
+  - 32 bytes: The X coordinate of `A` in big-endian order
+  - `0xAC` (`OP_CHECKSIG`)
+  - 40 witness bytes total
+
 ### Computing The Internal Public Key
 
 The internal public key, `Q`, is derived from `P[0]` and `P[1]`, using
@@ -232,6 +252,8 @@ KeyAgg(pk[1..n]):
             )
         Q = 026962aca1c57320eaa40f949928d3477f2eeb3ffdb7e3d7296c1f57608d2d2c69
 Q = 026962aca1c57320eaa40f949928d3477f2eeb3ffdb7e3d7296c1f57608d2d2c69
+tacc = 0
+gacc = 1
 ```
 
 ##### Internal Public Key Derivation Test Vector 2
@@ -271,6 +293,8 @@ KeyAgg(pk[1..n]):
             )
         Q = 02f89c20245de19bd2889af0b0b4bad84bfa99e7e181ac8e9549aeebfcbb10fb1b
 Q = 02f89c20245de19bd2889af0b0b4bad84bfa99e7e181ac8e9549aeebfcbb10fb1b
+tacc = 0
+gacc = 1
 ```
 
 ##### Internal Public Key Derivation Test Vector 3
@@ -310,6 +334,8 @@ KeyAgg(pk[1..n]):
             )
         Q = 0359774215a479bd01274044024c52dcd5e37e50f5d3596cc374eaf5035ebc884d
 Q = 0359774215a479bd01274044024c52dcd5e37e50f5d3596cc374eaf5035ebc884d
+tacc = 0
+gacc = 1
 ```
 
 ### Computing The Address
@@ -329,7 +355,10 @@ We define a "tagged hash", as follows:
 
 Compute the tapleaf hashes for each of the two tapscripts above, as follows:
 
-* `tagged_hash("TapLeaf", (0xc0 || script))`
+* `tagged_hash("TapLeaf", (0xc0 || scriptlen || script))`
+  - `scriptlen` is 1 byte, the length of the script
+    (68 (`0x44`) for the 2-of-2 Tapleaf script, 40 (`0x40`) for
+    the timelock Tapleaf script)
 
 Determine which tapleaf hash is lexicographically lesser than the other.
 The lower one is `h[0]` and the higher one is `h[1]`.
@@ -357,9 +386,81 @@ TODO
 
 ### Spending Via 2-of-2 Tapleaf Path
 
+In order to spend from the 2-of-2 Tapleaf path, Alice and Bob need
+to generate their signatures using the X-only (even Y coordinate)
+public key `A` and `B` (which may require that they negate the
+private key if the private key normally has an odd Y coordinate
+public key).
+Refer to [BIP-341 Signature Validation][] rules.
+
+Alice then arranges the `witness` for the input to spend.
+First, it sorts `A` and `B` into `P[0]` and `P[1]` as described
+above (`P[0]` is whichever one has a lexicographically earlier X
+coordinate in big-endian form), and constructs the `witness` for a
+2-of-2 Tapleaf path spend of the swap-in-potentiam output.
+The `witness`, from stack bottom to stack top, is:
+
+1.  Signature from `P[1]` (`A` if `A.x > B.x`, else `B`)
+2.  Signature from `P[0]` (`B` if `A.x > B.x`, else `A`)
+3.  The script `<P[0]> OP_CHECKSIGVERIFY <P[1]> OP_CHECKSIG`
+4.  The control block, the concatenation of:
+    - 1 byte: `0xC0` bitwise-ORed with the sign of the
+      tweaked output key `S` (0 if `S` has even Y
+      coordinate, 1 if `S` has odd Y coordinate).
+    - 32 bytes: `Q.x`, the X coordinate of `Q`.
+    - 32 bytes: The `tagged_hash` with tag `"TapLeaf"` of the
+      concatenation of:
+      - 1 byte: `0xC0`
+      - 1 byte: `0x28` (40, the length of the script)
+      - 40 bytes: the serialization of the script
+        `<4032 blocks> OP_CHECKSEQUENCEVERIFY OP_DROP <A> OP_CHECKSIG`
+
+Signatures are 64 bytes if `SIGHASH_ALL`/`SIGHASH_DEFAULT` is
+used, or 65 bytes (with the `SIGHASH` byte prepended) otherwise.
+
+#### Test Vectors For Control Block Of 2-of-2 Tapleaf Path
+
 TODO
 
 ### Spending Via Timelock Tapleaf Path
+
+If an unspent transaction output protected by a swap-in-potentiam
+address has 4032 or more confirmations, then Alice may spend the
+output unilaterally without a signature from Bob.
+This can happen if Alice is unable to contact Bob, or if Bob
+refuses to respond with proper signatures to spend the 2-of-2
+Tapleaf path.
+
+Alice then generates a signature for the transaction it intends to
+spend the input to.
+Refer to [BIP-341 Signature Validation][] rules.
+
+Alice then arranges the `witness` for the input to spend.
+First, it sorts `A` and `B` into `P[0]` and `P[1]` as described
+above (`P[0]` is whichever one has a lexicographically earlier X
+coordinate in big-endian form), and constructs the `witness` for a
+timelock Tapleaf path spend of the swap-in-potentiam output.
+The `witness`, from stack bottom to stack top, is:
+
+1.  Signature from `A`.
+2.  The script
+    `<4032 blocks> OP_CHECKSEQUENCEVERIFY OP_DROP <A> OP_CHECKSIG`
+3.  The control block, the concatenation of:
+    - 1 byte: `0xC0` bitwise-ORed with the sign of the
+      tweaked output key `S` (0 if `S` has even Y
+      coordinate, 1 if `S` has odd Y coordinate).
+    - 32 bytes: `Q.x`, the X coordinate of `Q`.
+    - 32 bytes: The `tagged_hash` with tag `"TapLeaf"` of the
+      concatenation of:
+      - 1 byte: `0xC0`
+      - 1 byte: `0x44` (68, the length of the script)
+      - 68 bytes: the serialization of the script
+        `<P[0]> OP_CHECKSIGVERIFY <P[1]> OP_CHECKSIG`
+
+Signatures are 64 bytes if `SIGHASH_ALL`/`SIGHASH_DEFAULT` is
+used, or 65 bytes (with the `SIGHASH` byte prepended) otherwise.
+
+#### Test Vectors For Control Block Of Timelock Tapleaf Path
 
 TODO
 
@@ -1545,6 +1646,7 @@ The LSP SHOULD use its normal `minimum_depth` setting to judge as
 [BIP-327 Tweak PubKey Agg]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#tweaking-the-aggregate-public-key
 [BIP-340]: https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki
 [BIP-341]: https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki
+[BIP-341 Signature Validation]: https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki#user-content-Signature_validation_rules
 [BIP-370]: https://github.com/bitcoin/bips/blob/master/bip-0370.mediawiki
 [BIP-371]: https://github.com/bitcoin/bips/blob/master/bip-0371.mediawiki
 [BOLT 1 `error` Message]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-error-and-warning-messages
