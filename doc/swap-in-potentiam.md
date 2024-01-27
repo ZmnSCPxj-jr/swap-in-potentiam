@@ -1440,7 +1440,8 @@ follows:
 
 The LSP MAY perform the above validation by validating the
 resulting permanent channel ID (which is the `funding_txid` with
-the last two bytes XORed with the `funding_output_index`).
+the last two bytes XORed with the `funding_output_index` in
+big-endian order).
 
 If the above validation fails, the LSP MUST send a [BOLT 1 `error`
 Message][] specifying the channel being opened.
@@ -1573,8 +1574,7 @@ completed.
 
 Until the LSP has sent `funding_signed` and the client has
 received it, any disconnection and reconnection means that the
-channel open has aborted, and the client has to restart the
-funding.
+channel open has aborted.
 
 In such a case, the LSP can simply consider the channel funding
 to have aborted.
@@ -1608,6 +1608,29 @@ On abort, the LSP **atomically** performs the following:
   * Removes any persistently stored data about the funding
     transaction.
 * Send an `error` for the channel.
+
+The LSP MUST NOT send a `channel_ready` for the channel if the
+LSP aborts the 0-conf funding from swap-in-potentiam outputs.
+In effect, `channel_ready` from the LSP is the "real" signal
+that the 0-conf funding completed.
+
+There is an edge case where the client has sent out the
+`c=.sip.sign_funding_alice` request, but has not received a
+response from the LSP before a disconnection occurs.
+In such a case, it is ambiguous to the client whether the LSP was
+able to receive and record the Alice-side signatures, or not.
+On reconnection, the client can determine if the channel request
+completed depending on whether the LSP sends `channel_ready`
+first, or `error`.
+If the LSP sends `error` first before `channel_ready`, this means
+the LSP was not able to record the Alice-side signatures before
+the disconnection occurred, and the LSP has performed an abort.
+
+On an abort, the client, as Alice, may reuse the swap-in-potentiam
+transaction outputs that were spent in the funding transaction.
+The client MAY retry the channel funding with the same or with an
+overlapping set of inputs, or the client MAY use the transaction
+outputs in another swap-in-potentiam operation.
 
 #### Ensuring Funding Transaction Confirmation
 
