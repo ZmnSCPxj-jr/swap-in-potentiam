@@ -215,6 +215,10 @@ has an odd Y coordinate.
 
 #### Test Vectors For Internal Public Key Derivation
 
+In addition to these test vectors, please also refer to the
+[BIP-327 KeyAgg Test
+Vectors](https://github.com/bitcoin/bips/blob/master/bip-0327/vectors/key_agg_vectors.json).
+
 ##### Internal Public Key Derivation Test Vector 1
 
 ```
@@ -1467,6 +1471,10 @@ message, as long as the LSP sends the `error` *before* sending
 
 If the above validation succeeds, the LSP MUST send [BOLT 2
 `funding_signed` Message][].
+
+##### Test Vectors For 0-conf Funding Transaction
+
+TODO
 
 #### Providing Alice-side Signatures To Fund 0-conf Channel
 
