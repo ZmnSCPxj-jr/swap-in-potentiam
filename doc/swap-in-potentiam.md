@@ -505,15 +505,6 @@ Bob MUST retain the following data, for its own security:
 
 * A mapping between a transaction output `txid:vout`, to a
   `state` described later.
-  * If the transaction output has been spent onchain, Bob MAY
-    forget its mapping if the *spending* transaction has already
-    confirmed for 100 blocks.
-    Bob MUST otherwise remember the transaction output if it
-    is still unspent.
-
-> **Rationale** The 100 blocks is the same as coinbase maturity,
-> which assumes that chain reorganizations cannot be as large as
-> 100 blocks.
 
 The `state` is an enumeration of the following.
 States are just human-readable labels, though Bob MAY use any other
@@ -550,6 +541,19 @@ equivalent representation:
     the connection dropped before Bob could receive the Alice-side
     signature for the funding transaction).
     Bob can now allow Alice to reuse this output.
+
+Bob SHOULD forget a mapping between `txid:vout` to a `state`, if
+any of the following conditions are true:
+
+* If the transaction output has been spent onchain, Bob MAY
+  forget its mapping if the *spending* transaction has already
+  confirmed for 100 blocks.
+  Bob MUST otherwise remember the transaction output if it
+  is still unspent.
+
+> **Rationale** The 100 blocks is the same as coinbase maturity,
+> which assumes that chain reorganizations cannot be as large as
+> 100 blocks.
 
 Alice MAY request either an onchain operation or a 0-conf Lightning
 operation, when specifying a swap-in-potentiam UTXO.
@@ -930,7 +934,7 @@ The LSP:
 
 #### Swap-in-potentiam Transaction Output Deadline
 
-The "deadline" is the number of blocks remaning before
+The "deadline" is the number of blocks remaining before
 the `OP_CHECKSEQUENCEVERIFY` branch of the
 swap-in-potentiam address becomes valid.
 It is `txo_confirmation_height + 4032 - current_blockheight`.
@@ -1183,24 +1187,25 @@ anchor output, and an optional change output.
 ```JSON
 {
   "temporary_channel_id": "123456789abcdef123456789abcdef123456789abcdef123456789abcdef",
+  "current_blockheight": 424691,
   "inputs": [
     {
       "prev_out": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210:2",
       "alice_pubkey": "02fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
-      "amount_sat": 19920
+      "amount_sat": "19920"
     },
     {
       "prev_out": "9876543219fedcba9876543219fedcba9876543219fedcba9876543219fedcba:1",
       "alice_pubkey": "039876543219fedcba9876543219fedcba9876543219fedcba9876543219fedcba",
-      "amount_sat": 19920
+      "amount_sat": "19920"
     }
   ],
   "change": {
-    "amount_sat": 99999,
+    "amount_sat": "99999",
     "alice_pubkey": "039876543219fedcba9876543219fedcba9876543219fedcba9876543219fedcba"
   },
   "funding": {
-    "amount_sat": 100000,
+    "amount_sat": "100000",
     "output_script": "00204321098765fedcba4321098765fedcba4321098765fedcba4321098765fedcba"
   },
   "order": "cfa",
@@ -1213,6 +1218,18 @@ in a previous `c=.sip.intend_to_fund_channel` call, and which the
 client has used in an `open_channel` to which the LSP has responded
 with an `accept_channel`.
 
+`current_blockheight` is what the client believes to be the current
+blockheight.
+
+The LSP:
+
+* MUST check that the `current_blockheight` is acceptable compared
+  to its own view of the current blockheight.
+* MAY accept a small discrepancy between the client-specified
+  `current_blockheight` and its own blockheight.
+  * If so, MUST calculate all confirmation depths and deadlines
+    from the client-specified `current_blockheight`.
+
 `inputs` is a non-empty array of objects describing the inputs to
 the funding transaction.
 Each object has three keys:
@@ -1223,20 +1240,26 @@ Each object has three keys:
   address that locks the above unspent transaction output,
   [<LSPS0 pubkey>][].
   The LSP node ID is the Bob public key.
-* `amount_sat` is the amount of this unspent transaction output.
+* `amount_sat` is the amount of this unspent transaction output
+  in satoshis, [<LSPS0 sat>][].
+  Notice that this is a string.
 
 `change` is an ***optional*** object.
 If absent, it indicates that there is no change output.
 If specified, the object has two keys:
 
-* `amount_sat` is the amount to put in the change output.
+* `amount_sat` is the amount to put in the change output in
+  satoshis, [<LSPS0 sat>][].
+  Notice that this is a string.
 * `alice_pubkey` is the Alice public key for the swap-in-potentiam
   address that locks the change output.
   The LSP node ID is the Bob public key.
 
 `funding` is an object with two keys:
 
-* `amount_sat` is the amount to put in the channel funding output.
+* `amount_sat` is the amount to put in the channel funding output
+  in satoshis, [<LSPS0 sat>][].
+  Notice that this is a string.
 * `output_script` is the `scriptPubKey` of the channel funding
   output.
 
@@ -1267,7 +1290,12 @@ values for `order`:
 
 `nLockTime` is an unsigned 32-bit integer, indicating the value of
 the `nLockTime` field of the resulting funding transaction, and
-MUST be < 500,000,000 indicating it is a block height.
+MUST be less than or equal to `current_blockheight` plus 1.
+
+The client SHOULD use an `nLockTime` equal to its
+`current_blockheight` plus 1, or, with low probability, from the
+`current_blockheight` to `current_blockheight - 100` uniformly at
+random.
 
 The LSP, on receiving this call, performs the following validation:
 
@@ -1275,22 +1303,32 @@ The LSP, on receiving this call, performs the following validation:
   previous `c=.sip.intend_to_fund_channel` that has not yet timed
   out, and the client has already sent `open_channel` and the LSP
   has responded with an `accept_channel`.
+* `current_blockheight` MUST be equal to its own view of the
+  current blockheight, or be near enough to be acceptable.
+* `nLockTime` MUST be less than or equal to the specified
+  `current_blockheight` plus 1.
 * `inputs` MUST have at least one entry.
   * Each `prev_out` MUST be an unspent transaction output which
-    has been confirmed by at least `min_confirmations`.
+    has been confirmed by at least `min_confirmations`, assuming
+    the current blockheight is in fact `current_blockheight`.
   * Each `prev_out` MUST be able to transition to the
     `bob_provisionally_secured` state, as described in [Bob
      Storage Requirements](#bob-storage-requirements).
   * Each `prev_out` MUST have a "deadline" that is greater than
-    the smallest `max_deadline`.
+    the smallest `max_deadline`, assuming the current blockheight
+    is in fact `current_blockheight`.
     The LSP MUST determine the shortest deadline among all the
     spent transaction outputs and the corresponding `max_deadline`
     and `min_feerate`.
   * Each `prev_out` MUST have a `scriptPubKey` that corresponds to
     the swap-in-potentiam address with the given `alice_pubkey`
     and the LSP node ID as the Bob public key.
+  * The `amount_sat` matches the actual value of the specified
+    `prev_out`.
 * The `amount_sat` of the `funding` object MUST equal the
   `funding_satoshis` from the `open_channel` message.
+* The `output_script` of the `funding` object MUST match the
+  expected channel funding `scriptPubKey`.
 
 The funding transaction is constructed as follows:
 
@@ -1358,8 +1396,6 @@ than the above expected minimum fee rate.
     transition to `bob_provisionally_secured`.
 * `insufficient_confirms` (3) - One or more of the `prev_out`s
   specified in the `inputs` has not been confirmed deeply enough.
-  The `error` `data` object contains a field `block_height`
-  containing the block height the LSP currently sees.
   The client can retry the channel open later.
 * `deadline_too_near` (4) - One or more of the `prev_out`s
   specified in the `inputs` has been confirmed so long ago that
@@ -1370,10 +1406,20 @@ than the above expected minimum fee rate.
   the inputs, or the difference of the input amounts minus the
   output amounts results in a fee that causes the entire
   transaction to be below the `min_feerate` required.
+* `blockheight_disagreement` (6) - The `current_blockheight` is
+  not equal to the LSP known blockheight, and the difference is
+  too large for the LSP to accept.
+  THe `data` field of the `error` object contains the field
+  `current_blockheight` which the LSP believes is the current
+  blockheight.
+  The client MAY retry this call once its own view of the current
+  blockheight matches the LSP, or may simply accept the blockheight
+  returned by the LSP.
 
 In addition, if `c=.sip.sign_funding_bob` fails for a
 `temporary_channel_id` with an error `code` other than
-`unrecognized_temporary_channel_id` (1), the LSP and client MUST
+`unrecognized_temporary_channel_id` (1) or
+`blockheight_disagreement` (6), the LSP and client MUST
 send a [BOLT 2 `error` Message][] of the channel being opened.
 
 Otherwise, if all the above validation passes, the LSP performs
@@ -1562,6 +1608,9 @@ Otherwise, the LSP performs the following **atomically**:
   `bob_secured`.
 * Store all signatures (client as Alice and LSP as Bob) into
   persistent storage, as well as the funding transaction.
+* Remove any timeout it created in
+  `c=.sip.intend_to_fund_channel`.
+* Broadcast the fully-signed transaction.
 
 Then, the LSP returns the following object from
 `c=.sip.sign_funding_alice`:
@@ -1571,8 +1620,7 @@ Then, the LSP returns the following object from
 ```
 
 Once the LSP succeeds the call, the LSP MUST send a [BOLT 2
-`channel_ready` Message][] for the channel, and MUST remove any
-timeout it created in `c=.sip.intend_to_fund_channel`.
+`channel_ready` Message][] for the channel.
 
 Once the LSP and client have exchanged `channel_ready`, the
 0-conf channel funding from swap-in-potentiam process has
@@ -1692,3 +1740,4 @@ The LSP SHOULD use its normal `minimum_depth` setting to judge as
 [<LSPS0 onchain fee rate>]: ../LSPS0/common-schemas.md#link-lsps0onchain_fee_rate
 [<LSPS0 outpoint>]: ../LSPS0/common-schemas.md#link-lsps0outpoint
 [<LSPS0 pubkey>]: ../LSPS0/common-schemas.md#link-lsps0pubkey
+[<LSPS0 sat>]: ../LSPS0/common-schemas.md#link-lsps0sat
