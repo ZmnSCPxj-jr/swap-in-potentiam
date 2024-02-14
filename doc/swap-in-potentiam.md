@@ -542,6 +542,79 @@ equivalent representation:
     signature for the funding transaction).
     Bob can now allow Alice to reuse this output.
 
+Bob only needs to maintain a mapping from `txid:vout` to `state`
+for `txid`s that have had at least 1 confirmation.
+This implies that Alice ***cannot*** spend from an unconfirmed
+swap-in-potentiam UTXO, as spending from a swap-in-potentiam UTXO
+requires that Bob change its `state` and therefore store this
+mapping in persistent storage.
+
+> **Rationale** The inability to spend from an unconfirmed
+> swap-in-potentiam UTXO prevents Alice from doing the following:
+>
+> 1.  Alice wants to pay to a 0-conf payment processor that only
+>     accepts 0-conf if the transaction does not opt-in to RBF,
+>     *and* wants to be able to spend the change from that, before
+>     the transaction is confirmed.
+>     - If the 0-conf payment processor accepted transactions that
+>       signalled opt-in RBF, then Alice could have simply replaced
+>       the transaction in order to *effectively* be able to spend
+>       the change, but this would also allow Alice to clawback by
+>       replacing the transaction with one that does *not* pay the
+>       payment processor.
+> 2.  Alice receives some funds on a swap-in-potentiam address,
+>     but the sender paid too low fees and the transaction cannot
+>     confirm, and Alice wants to "accelerate" it by CPFPing via
+>     its receiving swap-in-potentiam address.
+>
+> However, the restriction that Alice can only spend confirmed
+> transaction receives exists in order to limit the data stored by
+> Bob.
+>
+> If Alice could spend from an unconfirmed swap-in-potentiam UTXO,
+> Bob would need to associate the state `alice_moved` with that
+> UTXO.
+>
+> As a concrete example, suppose Alice owns a *confirmed*
+> swap-in-potentiam UTXO `A`.
+> Now suppose Alice asks Bob to sign a transaction spending `A`
+> to a new swap-in-potentiam UTXO, `B`, i.e. `A -> B`.
+> Bob then associates `A` to state `alice_moved`.
+> Now suppose Alice then asks Bob to sign a transaction spending
+> from above, `B -> C`.
+> Bob then associates `B` to state `alice_moved`.
+> Finally, Alice *does not complete signing the `A->B`
+> transaction*, meaning that `A -> B` can never be confirmed
+> onchain, but Alice has still obligated Bob to forever remember
+> the mapping `B` to `alice_moved`.
+> If Bob forgets this mapping, Alice could then complete the
+> signature for transaction `A -> B`, get it confirmed, then
+> ask Bob to use accept `B` to back a 0-conf Lightning operation
+> that has Bob credit Alice with the equivalent amount, which
+> Alice can send immediately over Lightning (for example, to
+> another node Alice controls).
+> But Alice is still in possession of the Bob-side signature
+> for `B -> C`, and can attempt to double-spend `B` using that,
+> which puts Bob at risk of loss of funds.
+>
+> If Bob instead forever remembers this mapping, then Alice can
+> constlessly overload Bob by building `C -> D`, `D -> E`, etc.
+> with Bob having to asssociate `alice_moved` with each spent
+> intermediate UTXO, and never signing and broadcasting the first
+> `A -> B` which would cause Alice to actually pay onchain fees.
+>
+> While a more complex policy of when to delete mappings may
+> allow Alice to have some limited ability to spend from
+> unconfirmed UTXOs, the risks involved in missing an edge case
+> in the specification was deemed too high and instead the
+> specification requires that Alice only spend from confirmed
+> UTXOs.
+>
+> By restricting to only confirmed UTXOs, Bob effectively limits
+> its data storage to a subset of the UTXO set, and the UTXO set
+> is kept small by the Bitcoin blockchain charging fees for
+> inserting new UTXOs into the UTXO set.
+
 Bob SHOULD forget a mapping between `txid:vout` to a `state`, if
 any of the following conditions are true:
 
