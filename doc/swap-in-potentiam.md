@@ -816,9 +816,9 @@ On receiving this call, the LSP performs the following validation:
 If the above validations fail, `c=.sip.sign_psbt_bob` returns one
 of the following errors (error `code` in parentheses):
 
-* `invalid_psbt` (1) - The `psbt` is not parseable as a Base64
+* `invalid_psbt` (1001) - The `psbt` is not parseable as a Base64
   format PSBT, or is otherwise invalid.
-* `unsupported_psbt_version` (2) - The PSBT version is not
+* `unsupported_psbt_version` (1002) - The PSBT version is not
   supported.
 
 If the above validations succeed, the LSP **atomically** performs
@@ -872,7 +872,7 @@ Requirements](#bob-storage-requirements), then
 `c=.sip.sign_psbt_bob` fails with the following error (error `code`
 in parentheses):
 
-* `utxo_not_valid` (4) - one or more of the inputs to be signed
+* `utxo_not_valid` (1004) - one or more of the inputs to be signed
   are currently in use for a 0-conf Lightning operation.
 
 Otherwise, the LSP has scanned all PSBT inputs and signed all
@@ -914,8 +914,26 @@ persistently-stored `state` of all spent swap-in-potentiam UTXOs to
 
 For its own security, the LSP will set certain parameters.
 The client uses `c=.sip.get_sip_info` to query those parameters.
-`c=.sip.get_sip_info` takes no parameters `{}` and has no errors
-defined.
+`c=.sip.get_sip_info` takes the parameters:
+
+```JSON
+{
+  "token": "SWAPINPOTENTIAMISAWESOME"
+}
+```
+
+`token` is an *optional*, arbitrary JSON string.
+This parameter is intended for use between the client and the LSP; it
+may be used to negotiate for a better fee rate than the LSP otherwise
+offers (i.e. a "discount coupon"), or for the LSP to actually offer
+this service to the client (i.e. an "API key") instead of failing to
+provide any support, or for any other purpose.
+
+`ce.sip.get_sip_info` has the following error defined (error
+`code` in parentheses):
+
+* `0conf_sip_disabled` (1100) - The LSP is currently not
+  supporting 0-conf Lightning operations with this client.
 
 `c=.sip.get_sip_info` results in an object like the below:
 
@@ -936,6 +954,8 @@ defined.
       "min_feerate": 10000
     }
   ],
+  "min_channel_size_sat": "100000000",
+  "max_channel_size_sat": "10000000000",
   "valid_until": "2024-01-18T14:42:24.000Z",
   "promise": "arbitrary-string-9999"
 }
@@ -987,6 +1007,12 @@ Objects in the array MUST NOT duplicate `max_deadline`.
 per weight unit (or equivalently, satoshis per 1000 weight units)
 and must be at least 253.
 
+`min_channel_size_sat` and `max_channel_size_sat` are JSON strings
+containing amounts in satoshi [<LSPS0 sat>][].
+These are the minimum and maximum channel sizes, inclusive,
+supported by the LSP for opening 0-conf Lightning channels backed
+by a swap-in-potentiam with the client.
+
 `valid_until` is a [<LSPS0 datetime>][] indicating the maximum
 time that the returned parameters are still valid.
 The LSP MUST return a `valid_until` time that is at least 60
@@ -1004,6 +1030,20 @@ The LSP:
   characters that require a JSON string `\` escape to represent).
 * MUST return a JSON string of no more than 256 bytes in ASCII
   encoding.
+* SHOULD generate the promise by a cryptographic protocol that
+  is not third-party-forgeable, and is verifiable by the LSP as
+  attesting to the validity of the other fields in the result.
+  * For example, it could use a standard MAC of some deterministic
+    canonical serialization of the fields it returned in the
+    result of the `c=.sip.get_sip_info` call, and encode the MAC
+    as hexadecimal or base64.
+
+The LSP MAY add other fields to the result of the
+`c=.sip.get_sip_info` call.
+The client MUST include all fields of the result, including fields
+it does not recognize, when providing the swap-in-potentiam
+information in other calls, such as to
+`c=.sip.intend_to_fund_channel`.
 
 #### Swap-in-potentiam Transaction Output Deadline
 
@@ -1107,9 +1147,10 @@ The opening flow goes this way:
 * The client calls `c=.sip.intend_to_fund_channel`, indicating the
   `temporary_channel_id` of the subsequent `open_channel`.
 * The client sends `open_channel` with the indicated
-  `temporary_channel_id`, with `type` including `option_zeroconf`.
+  `temporary_channel_id`.
 * The LSP checks the other parameters of the `open_channel`, and
-  if they are acceptable, sends `accept_channel`.
+  if they are acceptable, sends `accept_channel` with
+  `minimum_depth` equal to `0`.
 * The client constructs the 0-conf funding transaction.
   * The transaction spends one or more confirmed (to depth
     `min_confirmations`) swap-in-potentiam UTXOs, all of which
@@ -1162,7 +1203,27 @@ call, with parameters:
 ```JSON
 {
   "temporary_channel_id": "123456789abcdef123456789abcdef123456789abcdef123456789abcdef",
-  "promise": "arbitrary-string-9999"
+  "sip_info": {
+    "min_confirmations": 3,
+    "onchain_fee_schedule": [
+      {
+        "max_deadline": 288,
+        "min_feerate": 50000
+      },
+      {
+        "max_deadline": 576,
+        "min_feerate": 25000
+      },
+      {
+        "max_deadline": 1008,
+        "min_feerate": 10000
+      }
+    ],
+    "min_channel_size_sat": "100000000",
+    "max_channel_size_sat": "10000000000",
+    "valid_until": "2024-01-18T14:42:24.000Z",
+    "promise": "arbitrary-string-9999"
+  }
 }
 ```
 
@@ -1182,14 +1243,16 @@ The LSP MUST check that the `temporary_channel_id` does not match
 the channel ID of any current open channel, or any current
 `temporary_channel_id` of any channel currently being opened.
 
-`promise` is the arbitrary string returned from a previous
-`c=.sip.get_sip_info` call, which identifies the set of parameters
-that the client and LSP will use for this 0-conf Lightning
-operation.
+`sip_info` is a required object, an object result returned from a
+previous `c=.sip.get_sip_info` call.
+This identifies the set of parameters that the client and LSP will
+use for this 0-conf Lightning operation.
 
-The LSP MUST check that the indicated `promise` string was returned
-by the LSP in a previous `c=.sip.get_sip_info`, and that its
-`valid_until` is still in the future.
+The client MUST include all fields from the result of
+`c=.sip.get_sip_info`, including fields it does not recognize.
+
+The LSP SHOULD validate that the given `sip_info` is valid, as
+attested by the `promise`.
 
 On failure, `c=.sip.intend_to_fund_channel` may have the following
 errors (error code numbers in parentheses):
@@ -1215,8 +1278,6 @@ the step where the LSP receives and validates a corresponding
 * SHOULD `error` the channel if opening has started.
 * SHOULD fail any `c=.sip.sign_funding_bob` and
   `c=.sip.sign_funding_alice` calls for this channel.
-* MAY reject an `open_channel` of the specified
-  `temporary_channel_id` if it is a 0-conf channel open.
 * MUST roll back any `state` changes that occurred during a
   `ce=.sip.sign_funding_bob` call.
 
@@ -1225,23 +1286,30 @@ the step where the LSP receives and validates a corresponding
 > funding any channels, thereby wasting LSP resources.
 
 After success, the client SHOULD send an `open_channel` with the
-given `temporary_channel_id`, with 0-conf and anchor commitment
-types.
+given `temporary_channel_id`, with anchor commitment types.
 The client MUST ensure that it can build a funding transaction
 with an onchain fee rate equal or higher than required for the
-shortest-deadline UTXO it intends to spend.
+shortest-deadline UTXO it intends to spend, and with an anchor
+output for the LSP.
 
-After success, the LSP MUST accept an `open_channel` if all
+After success, the LSP SHOULD accept an `open_channel` if all
 conditions below are true:
 
 * The timeout has not been reached yet.
 * Its `temporary_channel_id` matches the one given in this call.
 * The channel has the following types set:
-  * `option_zeroconf`
   * `option_anchor_outputs` **OR** `option_anchors_zero_fee_htlc_tx`
-* All other channel parameters (other than `temporary_channel_id`
-  and `option_zeroconf`) from the client are acceptable to the
-  LSP.
+* All other channel parameters (other than `temporary_channel_id`)
+  from the client are acceptable to the LSP.
+* The `funding_satoshis` is within the range specified in the
+  `sip_info` object `min_channel_size_sat` and
+  `max_channel_size_sat`.
+
+When the LSP receives an `open_channel` matching the above, the
+LSP accepts using the [BOLT 2 `accept_channel` Message][].
+The following settings MUST be set:
+
+* `minimum_depth` is `0`.
 
 #### Requesting Bob-side Signatures To Fund 0-conf Channel
 
@@ -1436,7 +1504,7 @@ of the funding transaction and the result of
     (`txo_confirmation_height + 4032 - current_blockheight`) is
    the lowest.
    * `txo_confirmation_height` is the height of the block that
-     confirms the transaction id specified in the `prev_out`.
+     confirms the transaction ID specified in the `prev_out`.
 * Find the highest `max_deadline` that is still lower than the
   above lowest deadline.
 * Get the corresponding `min_feerate`.
@@ -1447,7 +1515,7 @@ than the above expected minimum fee rate.
 `c=.sip.sign_funding_bob` has the following errors defined (error
 `code` in parentheses):
 
-* `unrecognized_temporary_channel_id` (1) - The specified
+* `unrecognized_temporary_channel_id` (1201) - The specified
   `temporary_channel_id` does not correspond to an ongoing
   0-conf funding from a swap-in-potentiam address initiated by a
   previous `c=.sip.intend_to_fund_channel`, or the LSP has not
@@ -1455,7 +1523,7 @@ than the above expected minimum fee rate.
   specifying this temporary channel ID, or the LSP has already
   received a previous valid `c=.sip.sign_funding_bob` call for
   this temporary channel ID, or the channel open has timed out.
-* `invalid_prev_out` (2) - One or more of the `prev_out`s
+* `invalid_prev_out` (1202) - One or more of the `prev_out`s
   specified in the `inputs` has one or more of the following
   properties:
   * It is not a confirmed unspent transaction output.
@@ -1467,19 +1535,19 @@ than the above expected minimum fee rate.
   * Its current `state` as specified in the section [Bob Storage
     Requirements](#bob-storage-requirements) cannot validly
     transition to `bob_provisionally_secured`.
-* `insufficient_confirms` (3) - One or more of the `prev_out`s
+* `insufficient_confirms` (1203) - One or more of the `prev_out`s
   specified in the `inputs` has not been confirmed deeply enough.
   The client can retry the channel open later.
-* `deadline_too_near` (4) - One or more of the `prev_out`s
+* `deadline_too_near` (1204) - One or more of the `prev_out`s
   specified in the `inputs` has been confirmed so long ago that
   the deadline is lower than the smallest `max_deadline` in the
   previously-selected set of parameters from
   `c=.sip.get_sip_info`.
-* `fee_too_small` (5) - The total of the outputs is greater than
+* `fee_too_small` (1205) - The total of the outputs is greater than
   the inputs, or the difference of the input amounts minus the
   output amounts results in a fee that causes the entire
   transaction to be below the `min_feerate` required.
-* `blockheight_disagreement` (6) - The `current_blockheight` is
+* `blockheight_disagreement` (1206) - The `current_blockheight` is
   not equal to the LSP known blockheight, and the difference is
   too large for the LSP to accept.
   THe `data` field of the `error` object contains the field
@@ -1487,7 +1555,8 @@ than the above expected minimum fee rate.
   blockheight.
   The client MAY retry this call once its own view of the current
   blockheight matches the LSP, or may simply accept the blockheight
-  returned by the LSP.
+  returned by the LSP by copying the `current_blockheight` from the
+  LSP.
 
 In addition, if `c=.sip.sign_funding_bob` fails for a
 `temporary_channel_id` with an error `code` other than
@@ -1657,7 +1726,7 @@ If the validation fails, the LSP fails this call and the LSP MUST
 The following errors are defined for this call (error `code`s in
 parentheses):
 
-* `unrecognized_temporary_channel_id` (1) - The specified
+* `unrecognized_temporary_channel_id` (1301) - The specified
   `temporary_channel_id` does not correspond to an ongoing
   0-conf funding from a swap-in-potentiam address where the
   client has successfully called `c=.sip.sign_funding_bob`, or the
@@ -1666,13 +1735,13 @@ parentheses):
   LSP has already received a previous valid
   `c=.sip.sign_funding_alice` call for this temporary channel ID,
   or the channel open has timed out.
-* `invalid_alice_signatures` (2) - The length of `alice_signatures`
+* `invalid_alice_signatures` (1302) - The length of `alice_signatures`
   is incorrect, or at least one of the `alice_signatures` is not a
   valid signature for the funding transaction.
 
 In addition, if `c=.sip.sign_funding_alice` fails for a
 `temporary_channel_id` with an error `code` other than
-`unrecognized_temporary_channel_id` (1), the LSP and client MUST
+`unrecognized_temporary_channel_id` (1301), the LSP and client MUST
 send a [BOLT 2 `error` Message][] of the channel being opened.
 
 Otherwise, the LSP performs the following **atomically**:
