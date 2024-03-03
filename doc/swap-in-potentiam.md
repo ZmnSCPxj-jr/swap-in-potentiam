@@ -939,45 +939,99 @@ provide any support, or for any other purpose.
 
 ```JSON
 {
-  "min_confirmations": 3,
-  "onchain_fee_schedule": [
-    {
-      "max_deadline": 288,
-      "min_feerate": 50000
-    },
-    {
-      "max_deadline": 576,
-      "min_feerate": 25000
-    },
-    {
-      "max_deadline": 1008,
-      "min_feerate": 10000
-    }
-  ],
-  "min_channel_size_sat": "100000000",
-  "max_channel_size_sat": "10000000000",
-  "valid_until": "2024-01-18T14:42:24.000Z",
-  "promise": "arbitrary-string-9999"
+  "sip_offchain_info": {
+    "min_confirmations": 3,
+    "onchain_fee_schedule": [
+      {
+        "max_deadline": 288,
+        "min_feerate": 50000
+      },
+      {
+        "max_deadline": 576,
+        "min_feerate": 25000
+      },
+      {
+        "max_deadline": 1008,
+        "min_feerate": 10000
+      }
+    ],
+    "min_offchain_size_sat": "100000000",
+    "max_offchain_size_sat": "10000000000",
+    "valid_until": "2024-01-18T14:42:24.000Z",
+    "promise": "arbitrary-string-9999"
+  }
 }
 ```
 
-`min_confirmations` is a required JSON positive non-zero
-integral number indicating the number of blocks that a
-swap-in-potentiam transaction output must be confirmed,
-before this LSP will accept it for 0-conf Lightning
-operations.
+`sip_offchain_info` is a required object, describing
+the parameters of any 0-conf Lightning operation the
+LSP will accept from this client.
 
-The LSP:
+The fields of `sip_offchain_info` are:
 
-* SHOULD NOT change the `min_confirmation` once it has
-  indicated it for a particular client.
-  * If it absolutely needs to change this setting,
-    SHOULD only lower it and not increase it for that
-    particular client.
-* SHOULD set `min_confirmations` to the same value as
-  it would set for `minimum_depth` in an `accept_channel`
-  for a non-swap-in-potentiam-funded channel with this
-  client.
+* `min_confirmations` is a required JSON positive non-zero
+  integral number indicating the number of blocks that a
+  swap-in-potentiam transaction output must be confirmed,
+  before this LSP will accept it for 0-conf Lightning
+  operations.
+  The LSP:
+  * SHOULD NOT change the `min_confirmation` once it has indicated
+    it for a particular client.
+    * If it absolutely needs to change this setting, SHOULD only
+      lower it and not increase it for that particular client.
+  * SHOULD set `min_confirmations` to the same value as it would
+    set for `minimum_depth` in an `accept_channel` for a
+    non-swap-in-potentiam-funded channel with this client.
+* `onchain_fee_schedule` is a required array of objects.
+  If `onchain_fee_schedule` is empty, the LSP currently does not
+  allow 0-conf Lightning operations with the client.
+  Otherwise if the array is non-empty, the LSP allows 0-conf
+  Lightning operations.
+  * Each object in `onchain_fee_schedule` has two fields,
+    `max_deadline` and `min_feerate`, both required JSON non-zero
+    positive integral numbers.
+  * Objects in the array MUST be sorted on the `max_deadline`
+    field in ascending order from lowest to highest.
+  * Objects in the array MUST NOT duplicate `max_deadline`.
+    `max_deadline` MUST be non-zero and less than 4032.
+    `min_feerate` is a [<LSPS0 onchain fee rate>][] in
+    millisatoshis per weight unit (or equivalently, satoshis per
+    1000 weight units) and must be at least 253.
+  * Each object MUST NOT have any field other than
+    `max_deadline` and `min_feerate`.
+* `min_offchain_size_sat` and `max_offchain_size_sat` are JSON
+  strings containing amounts in satoshi [<LSPS0 sat>][].
+  These are the minimum and maximum sizes, inclusive, supported by
+  the LSP for 0-conf Lightning operations.
+  * For 0-conf funding of Lighting channels backed by
+    swap-in-potentiam, these are the limits on the channel size
+    allowed.
+* `valid_until` is a [<LSPS0 datetime>][] indicating the maximum
+  time that the returned parameters are still valid.
+  The LSP MUST return a `valid_until` time that is at least 60
+  minutes in the future.
+  The client SHOULD call `c=.sip.get_sip_info` again if its cached
+  swap-in-potentiam information has a `valid_until` that is less
+  than 10 minutes into the future.
+* `promise` is an arbitrary JSON string that identifies this set
+  of returned parameters.
+  The LSP:
+  * MUST NOT use JSON string `\` escapes.
+  * MUST use only characters in the ASCII range 32 to 126 (except
+    characters that require a JSON string `\` escape to
+    represent).
+  * MUST return a JSON string of no more than 256 bytes in ASCII
+    encoding.
+  * SHOULD generate the promise by a cryptographic protocol that
+    is not third-party-forgeable, and is verifiable by the LSP as
+    attesting to the validity of the other fields in the result.
+    * For example, it could use a standard MAC of some
+      deterministic canonical serialization of the fields it
+      returned in the result of the `c=.sip.get_sip_info` call,
+      and encode the MAC as hexadecimal or base64.
+  * MAY include additional information that the client does not
+    need to understand, but which the LSP has to remember across
+    calls, in the `promise`.
 
 > **Rationale** Sending to a swap-in-potentiam address
 > is really opening a non-Lightning channel between
@@ -988,61 +1042,10 @@ The LSP:
 > swap-in-potentiam with Alice, as they are congruous
 > operations.
 
-`onchain_fee_schedule` is a required array of objects.
-If `onchain_fee_schedule` is empty, the LSP currently
-does not allow 0-conf Lightning operations with the
-client.
-Otherwise if the array is non-empty, the LSP allows
-0-conf Lightning operations.
-
-Each object in `onchain_fee_schedule` has two fields,
-`max_deadline` and `min_feerate`, both required JSON
-non-zero positive integral numbers.
-Objects in the array MUST be sorted on the
-`max_deadline` field in ascending order from lowest to
-highest.
-Objects in the array MUST NOT duplicate `max_deadline`.
-`max_deadline` MUST be non-zero and less than 4032.
-`min_feerate` is a [<LSPS0 onchain fee rate>][] in millisatoshis
-per weight unit (or equivalently, satoshis per 1000 weight units)
-and must be at least 253.
-
-`min_channel_size_sat` and `max_channel_size_sat` are JSON strings
-containing amounts in satoshi [<LSPS0 sat>][].
-These are the minimum and maximum channel sizes, inclusive,
-supported by the LSP for opening 0-conf Lightning channels backed
-by a swap-in-potentiam with the client.
-
-`valid_until` is a [<LSPS0 datetime>][] indicating the maximum
-time that the returned parameters are still valid.
-The LSP MUST return a `valid_until` time that is at least 60
-minutes in the future.
-The client SHOULD call `c=.sip.get_sip_info` again if its
-cached swap-in-potentiam information has a `valid_until` that
-is less than 10 minutes into the future.
-
-`promise` is an arbitrary JSON string that identifies this set of
-the returned parameters.
-The LSP:
-
-* MUST NOT use JSON string `\` escapes.
-* MUST use only characters in the ASCII range 32 to 126 (except
-  characters that require a JSON string `\` escape to represent).
-* MUST return a JSON string of no more than 256 bytes in ASCII
-  encoding.
-* SHOULD generate the promise by a cryptographic protocol that
-  is not third-party-forgeable, and is verifiable by the LSP as
-  attesting to the validity of the other fields in the result.
-  * For example, it could use a standard MAC of some deterministic
-    canonical serialization of the fields it returned in the
-    result of the `c=.sip.get_sip_info` call, and encode the MAC
-    as hexadecimal or base64.
-
-The LSP MAY add other fields to the result of the
-`c=.sip.get_sip_info` call.
-The client MUST include all fields of the result, including fields
-it does not recognize, when providing the swap-in-potentiam
-information in other calls, such as to
+The LSP MAY add other fields to the `sip_offchain_info` object.
+The client MUST include all fields of `sip_offchain_info`,
+including fields it does not recognize, when providing the
+swap-in-potentiam information in other calls, such as to
 `c=.sip.intend_to_fund_channel`.
 
 #### Swap-in-potentiam Transaction Output Deadline
@@ -1073,7 +1076,7 @@ in 0-conf Lightning operations.
 
 The onchain feerate used depends on the schedule.
 For example, suppose the `onchain_feerate_schedule`
-is:
+of the `sip_offchain_info` object is:
 
 ```JSON
 [
@@ -1203,7 +1206,7 @@ call, with parameters:
 ```JSON
 {
   "temporary_channel_id": "123456789abcdef123456789abcdef123456789abcdef123456789abcdef",
-  "sip_info": {
+  "sip_offchain_info": {
     "min_confirmations": 3,
     "onchain_fee_schedule": [
       {
@@ -1243,16 +1246,18 @@ The LSP MUST check that the `temporary_channel_id` does not match
 the channel ID of any current open channel, or any current
 `temporary_channel_id` of any channel currently being opened.
 
-`sip_info` is a required object, an object result returned from a
-previous `c=.sip.get_sip_info` call.
+`sip_offchain_info` is a required object, an object result
+returned from a previous `c=.sip.get_sip_info` call in a
+`sip_offchain_info` field result.
 This identifies the set of parameters that the client and LSP will
 use for this 0-conf Lightning operation.
 
-The client MUST include all fields from the result of
-`c=.sip.get_sip_info`, including fields it does not recognize.
+The client MUST include all fields from the `sip_offchain_info`
+result of `c=.sip.get_sip_info`, including fields it does not
+recognize.
 
-The LSP SHOULD validate that the given `sip_info` is valid, as
-attested by the `promise`.
+The LSP MUST validate that the given `sip_offchain_info` is valid,
+as attested by the `promise`.
 
 On failure, `c=.sip.intend_to_fund_channel` may have the following
 errors (error code numbers in parentheses):
@@ -1302,8 +1307,8 @@ conditions below are true:
 * All other channel parameters (other than `temporary_channel_id`)
   from the client are acceptable to the LSP.
 * The `funding_satoshis` is within the range specified in the
-  `sip_info` object `min_channel_size_sat` and
-  `max_channel_size_sat`.
+  `sip_offchain_info` object `min_offchain_size_sat` and
+  `max_offchain_size_sat`.
 
 When the LSP receives an `open_channel` matching the above, the
 LSP accepts using the [BOLT 2 `accept_channel` Message][].
