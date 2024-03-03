@@ -157,17 +157,8 @@ has an odd Y coordinate.
 * `Q = KeyAgg([0x02 || P[0], 0x02 || P[1]])`
 
 > **Rationale** The internal public key is an aggregate of the Alice and
-> Bob public keys, which has the following advantages.
->
-> 1.  It prevents use of the keyspend path, unless Alice and Bob cooperate to
->     use the keyspend path, thus either participant can force use of one
->     of the Tapscript paths.
-> 2.  It prevents third parties from learning that the keyspend path is not
->     useable, as the internal public key is different for each Alice and Bob.
-> 3.  It allows future revision of this protocol to use the keyspend path for
->     cooperative cases, which reduces blockchain space and improves Alice and
->     Bob privacy, at the cost of greater implementation and protocol
->     complexity.
+> Bob public keys, which allows Alice and Bob to cooperatively sign a
+> transaction spending a UTXO protected by a swap-in-potentiam address.
 >
 > One of the public keys is simply the node ID of Bob.
 > This is a privacy leak, as spending via the 2-of-2 branch will reveal the
@@ -205,13 +196,11 @@ has an odd Y coordinate.
 >     Alice from creating a "watch-only wallet" that only knows public
 >     keys.
 >
-> The privacy hole here would be fixed if we can use the keyspend path
+> The privacy hole here is fixed if we can use the keyspend path
 > instead of the 2-of-2 Tapscript path;
 > assuming Alice does not publicize its public key, then it is not
 > possible for an onchain observer to determine which Bob is being
 > used, or even that this is a swap-in-potentiam address.
-> As it is intended that a future revision of this specification will
-> enable the keyspend path, this is considered an acceptable tradeoff.
 
 #### Test Vectors For Internal Public Key Derivation
 
@@ -1226,7 +1215,11 @@ call, with parameters:
     "max_channel_size_sat": "10000000000",
     "valid_until": "2024-01-18T14:42:24.000Z",
     "promise": "arbitrary-string-9999"
-  }
+  },
+  "alice_pubnonces": [
+    "023456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01203210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543",
+    "023456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01203210fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543"
+  ]
 }
 ```
 
@@ -1259,6 +1252,18 @@ recognize.
 The LSP MUST validate that the given `sip_offchain_info` is valid,
 as attested by the `promise`.
 
+`alice_pubnonces` is a non-empty array of strings.
+Each string is a hexadecimal dump of the concatenation of the
+33-byte compressed SEC representation of the two points of the
+`pubnonce`, generated according to [BIP-327 Nonce Generation][].
+The client generates one `(secnonce, pubnonce)` pair for each
+input it intends to spend into the channel funding transaction,
+and gives the `pubnonce`s only in this parameter.
+The client MUST retain the corresponding `secnonce`s in-memory,
+for use in subsequent steps.
+
+`alice_pubnonces` MUST NOT exceed 100 entries.
+
 On failure, `c=.sip.intend_to_fund_channel` may have the following
 errors (error code numbers in parentheses):
 
@@ -1271,9 +1276,39 @@ errors (error code numbers in parentheses):
   past.
 * `too_many_operations` (3) - there are too many running 0-conf
   channel funding operations that have not completed yet.
+* `invalid_pubnonces_length` (4) - the `alice_pubnonces` array
+  is empty or is too long.
 
-On success, `c=.sip.intend_to_fund_channel` returns the empty
-object `{}`.
+On success, `c=.sip.intend_to_fund_channel` returns an object
+like the following:
+
+```JSON
+{
+  "bob_pubnonces": [
+    "03456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01230210fedcba9876543210fedcba9876543210fedcba9876543210fedcba98765432",
+    "03456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01230210fedcba9876543210fedcba9876543210fedcba9876543210fedcba98765432"
+  ]
+}
+```
+
+`bob_pubnonces` is a required array of JSON strings.
+Each string is a hexadecimal dump of the concatenation of the two
+points in a BIP-327 `pubnonce`, generated via [BIP-327 Nonce
+Generation][].
+The length of `bob_pubnonces` MUST equal the length of
+`alice_pubnonces`.
+
+The LSP MUST retain the `(secnonce, pubnonce)`s of its returned
+`bob_pubnonces`, as well as the `alice_pubnonces`, until it is
+able to return the signatures in the subsequent
+`c=.sip.sign_funding_bob`, or if the funding flow fails before
+that point.
+
+The client MUST retain the `(secononce, pubnonce)`s of its
+given `alice_pubnonces`, as well as the `bob_pubnonces`, until it
+is able to receive the result of `c=.sip.sign_funding_bob` and
+completes the signature, or if the funding flow fails before
+that point.
 
 On success, the LSP SHOULD start a timeout of at least 10 minutes.
 If the timeout is reached, and the channel opening has not reached
@@ -1378,7 +1413,11 @@ The LSP:
 
 `inputs` is a non-empty array of objects describing the inputs to
 the funding transaction.
-Each object has three keys:
+The length of `inputs` MUST be equal to the length of the
+`alice_pubnonces` and `bob_pubnonces` array from the
+`c=.sip.intend_to_fund_channel` call.
+
+Each object in `inputs` has three keys:
 
 * `prev_out` is the unspent transaction output to be spent into
   the funding transaction, [<LSPS0 outpoint>][].
@@ -1454,6 +1493,9 @@ The LSP, on receiving this call, performs the following validation:
 * `nLockTime` MUST be less than or equal to the specified
   `current_blockheight` plus 1.
 * `inputs` MUST have at least one entry.
+  * The length of `inputs` is the same as the length of
+    `alice_pubnonces` and `bob_pubnonces` in the previous
+    `c=.sip.intend_to_fund_channel` call.
   * Each `prev_out` MUST be an unspent transaction output which
     has been confirmed by at least `min_confirmations`, assuming
     the current blockheight is in fact `current_blockheight`.
@@ -1528,7 +1570,9 @@ than the above expected minimum fee rate.
   specifying this temporary channel ID, or the LSP has already
   received a previous valid `c=.sip.sign_funding_bob` call for
   this temporary channel ID, or the channel open has timed out.
-* `invalid_prev_out` (1202) - One or more of the `prev_out`s
+* `invalid_inputs_length` (1202) - The length of `inputs` does
+  not match the length of `alice_pubnonces` and `bob_pubnonces`.
+* `invalid_prev_out` (1203) - One or more of the `prev_out`s
   specified in the `inputs` has one or more of the following
   properties:
   * It is not a confirmed unspent transaction output.
@@ -1540,19 +1584,19 @@ than the above expected minimum fee rate.
   * Its current `state` as specified in the section [Bob Storage
     Requirements](#bob-storage-requirements) cannot validly
     transition to `bob_provisionally_secured`.
-* `insufficient_confirms` (1203) - One or more of the `prev_out`s
+* `insufficient_confirms` (1204) - One or more of the `prev_out`s
   specified in the `inputs` has not been confirmed deeply enough.
   The client can retry the channel open later.
-* `deadline_too_near` (1204) - One or more of the `prev_out`s
+* `deadline_too_near` (1205) - One or more of the `prev_out`s
   specified in the `inputs` has been confirmed so long ago that
   the deadline is lower than the smallest `max_deadline` in the
   previously-selected set of parameters from
   `c=.sip.get_sip_info`.
-* `fee_too_small` (1205) - The total of the outputs is greater than
+* `fee_too_small` (1206) - The total of the outputs is greater than
   the inputs, or the difference of the input amounts minus the
   output amounts results in a fee that causes the entire
   transaction to be below the `min_feerate` required.
-* `blockheight_disagreement` (1206) - The `current_blockheight` is
+* `blockheight_disagreement` (1207) - The `current_blockheight` is
   not equal to the LSP known blockheight, and the difference is
   too large for the LSP to accept.
   THe `data` field of the `error` object contains the field
@@ -1565,9 +1609,12 @@ than the above expected minimum fee rate.
 
 In addition, if `c=.sip.sign_funding_bob` fails for a
 `temporary_channel_id` with an error `code` other than
-`unrecognized_temporary_channel_id` (1) or
-`blockheight_disagreement` (6), the LSP and client MUST
-send a [BOLT 2 `error` Message][] of the channel being opened.
+`unrecognized_temporary_channel_id` (1201) or
+`blockheight_disagreement` (1206), the LSP and client MUST
+send a [BOLT 2 `error` Message][] of the channel being opened,
+and MUST abort the 0-conf funding flow.
+In case of an abort, the LSP and client SHOULD forget the
+information related to the nonces.
 
 Otherwise, if all the above validation passes, the LSP performs
 the following **atomically**:
@@ -1577,22 +1624,42 @@ the following **atomically**:
   `bob_provisionally_secured`.
 * If a change output exists on the funding transaction, sets its
   `state` to `unconfirmed_alice_change`.
-* Creates signatures for all `inputs`, spending the corresponding
-  `prev_out` via the 2-of-2 Tapleaf Path, and signing using the
-  `SIGHASH_ALL` algorithm for SegWit.
-* Store the signatures, the funding transaction, and the funding
-  transaction ID into persistent storage.
+* Creates BIP-327 partial signatures for all `inputs`, spending
+  the corresponding `prev_out` via the keyspend path, and signing
+  using the `SIGHASH_ALL` algorithm for Taproot.
+  * Aggregate the corresponding `pubnonce` in `alice_pubnonces`
+    and `bob_pubnonces`, via [BIP-327 Nonce Aggregation][],
+    generating the `aggnonce`.
+    For instance, aggregate `alice_pubnonces[0]` with
+    `bob_pubnonces[0]` when signing for `inputs[0]`.
+  * Generate the [BIP-327 Session Context][].
+    * The order of Alice (client) and Bob (LSP) public keys are
+      described in section [Constructing Addresses And
+      Transactions](#constructing-addresses-and-transactions),
+      i.e. use `P[0]` and `P[1]`.
+    * There is a single `tweak[1]` (`v = 1`) corresponding to
+      the tweak applied in section [Computing The
+      Address](#computing-the-address),
+      `tagged_hash("TapTweak", GetXonlyPubkey(Q) || r)`.
+    * `is_xonly_t[1]` is `true`.
+    * The message is the `SIGHASH_ALL` algorithm for Taproot for
+      the generated funding transaction.
+  * Sign using [BIP-327 Signing][], generating partial signature
+    `psig`.
+    The LSP needs to use the `secnonce` that was generated for
+    this input during `c=.sip.intend_to_fund_channel`.
+* Store the funding transaction and the funding transaction ID
+  into persistent storage.
 
 The LSP then returns an object like the following as the return
 value of the `c=.sip.sign_funding_bob` call, containing the
-signatures it generated:
+BIP-327 partial signatures it generated:
 
 ```JSON
 {
   "bob_signatures": [
-    "faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450",
-    "aebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450f",
-    "ebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450fa"
+    "faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450",
+    "aebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450f"
   ]
 }
 ```
@@ -1601,21 +1668,20 @@ signatures it generated:
 Its length equals the length of the `inputs` array in the
 parameters.
 
-Each string in `bob_signatures` is a hex dump containing the Taproot
-signature from the LSP as Bob, spending the 2-of-2 Tapleaf Path,
+Each string in `bob_signatures` is a hex dump containing the BIP-327
+partial signature from the LSP as Bob, spending the keyspend path,
 and signing the funding transaction using the `SIGHASH_ALL`
-algorithm for SegWit.
-Each string is composed of 128 hex characters, each representing a
-64-byte signature.
+algorithm for Taproot.
+Each string is composed of 64 hex characters, each representing a
+32-byte partial signature.
 
 On success of the `c=.sip.sign_funding_bob` call, the client
 validates the following:
 
 * The length of `bob_signatures` MUST exactly equal the length of the
   given `inputs` array.
-* Each signature in `bob_signatures` MUST validly sign the
-  corresponding input of the funding transaction via the 2-of-2
-  Tapleaf Path using `SIGHASH_ALL`.
+* Each partial signature in `bob_signatures` MUST validate, as per
+  [BIP-327 Partial Signature Verification][].
 
 If the above validation fails, the client MUST abort the channel
 opening by sending a [BOLT 1 `error`  Message][] with the
@@ -1623,9 +1689,9 @@ opening by sending a [BOLT 1 `error`  Message][] with the
 user.
 
 Otherwise, if all `bob_signatures` returned by
-`c=.sip.sign_funding_bob` are valid, the client SHOULD continue
-with the channel opening flow, sending a [BOLT 2 `funding_created`
-Message][].
+`c=.sip.sign_funding_bob` are valid, the client MUST retain the
+partial signatures, and SHOULD continue with the channel opening
+flow, sending a [BOLT 2 `funding_created` Message][].
 
 The LSP validates the [BOLT 2 `funding_created` Message][] as
 follows:
@@ -1672,17 +1738,45 @@ TODO
 #### Providing Alice-side Signatures To Fund 0-conf Channel
 
 Once the client receives [BOLT 2 `funding_signed` Message][] from
-the LSP, the client can then complete the Alice-side signatures for
-the funding transaction, resulting in a completely signed funding
-transaction containing both the Alice and Bob signatures for each
-input.
+the LSP, the client can then complete the Alice-side partial
+signatures for the funding transaction, resulting in a completely
+signed funding transaction containing aggregate signatures for
+each input.
+
+The client, for each input, generates the aggregate signature
+as follows:
+
+* Aggregate the corresponding `pubnonce` in `alice_pubnonces`
+  and `bob_pubnonces`, via [BIP-327 Nonce Aggregation][],
+  generating the `aggnonce`.
+  For instance, aggregate `alice_pubnonces[0]` with
+  `bob_pubnonces[0]` when signing for `inputs[0]`.
+* Generate the [BIP-327 Session Context][].
+  * The order of Alice (client) and Bob (LSP) public keys are
+    described in section [Constructing Addresses And
+    Transactions](#constructing-addresses-and-transactions),
+    i.e. use `P[0]` and `P[1]`.
+  * There is a single `tweak[1]` (`v = 1`) corresponding to
+    the tweak applied in section [Computing The
+    Address](#computing-the-address),
+    `tagged_hash("TapTweak", GetXonlyPubkey(Q) || r)`.
+  * `is_xonly_t[1]` is `true`.
+  * The message is the `SIGHASH_ALL` algorithm for Taproot for
+    the generated funding transaction.
+* Sign using [BIP-327 Signing][], generating partial signature
+  `psig`.
+  The client needs to use the `secnonce` that was generated for
+  this input when calling `c=.sip.intend_to_fund_channel`.
+* Aggregate the LSP Bob-side partial signature and its Alice-side
+  partial signature using [BIP-327 Partial Signature
+  Aggregation][].
 
 The client can now perform the following *in any order* or *in
 parallel*:
 
 * Send its own [BOLT 2 `channel_ready` Message][] to the LSP.
 * Broadcast the completely signed funding transaction.
-* Call `c=.sip.sign_funding_alice`, providing the Alice-side
+* Call `c=.sip.sign_funding_alice`, providing the aggregated
   signatures.
 
 The `c=.sip.sign_funding_alice` call takes the following
@@ -1691,10 +1785,9 @@ parameters:
 ```JSON
 {
   "temporary_channel_id": "123456789abcdef123456789abcdef123456789abcdef123456789abcdef",
-  "alice_signatures": [
+  "aggregate_signatures": [
     "ebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450fa",
-    "faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450",
-    "aebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450f"
+    "faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450faebdc9182736450"
   ]
 }
 ```
@@ -1702,15 +1795,15 @@ parameters:
 `temporary_channel_id` is the temporary channel ID of this ongoing
 channel open.
 
-`alice_signatures` is an array of strings.
+`aggregate_signatures` is an array of strings.
 Its length equals the length of the `inputs` array from the previous
 `c=.sip.sign_funding_bob` call, and therefore equals the number of
 inputs in the funding transaction.
 
 Each string in `alice_signatures` is a hex dump containing the Taproot
-signature from the client as Alice, spending the 2-of-2 Tapleaf Path,
+signature from the client as Alice, spending the keyspend path,
 and signing the funding transaction using the `SIGHASH_ALL`
-algorithm for SegWit.
+algorithm for Taproot.
 Each string is composed of 128 hex characters, each representing a
 64-byte signature.
 
@@ -1720,11 +1813,11 @@ On receiving the `c=.sip.sign_funding_alice` call, the LSP validates:
   channel funding from a swap-in-potentiam that has had
   `c=.sip.sign_funding_bob` successfully called, and the LSP has
   sent `funding_signed`.
-* The length of `alice_signatures` MUST exactly equal the number of
-  inputs of the funding transaction.
+* The length of `aggregate_signatures` MUST exactly equal the
+  number of inputs of the funding transaction.
 * Each signature in `alice_signatures` MUST validly sign the
-  corresponding input of the funding transaction via the 2-of-2
-  Tapleaf Path using `SIGHASH_ALL`.
+  corresponding input of the funding transaction via the keyspend
+  path using `SIGHASH_ALL`.
 
 If the validation fails, the LSP fails this call and the LSP MUST
 `error` the channel.
@@ -1753,8 +1846,8 @@ Otherwise, the LSP performs the following **atomically**:
 
 * Set all inputs of the funding transaction to `state`
   `bob_secured`.
-* Store all signatures (client as Alice and LSP as Bob) into
-  persistent storage, as well as the funding transaction.
+* Store all aggregated signatures into persistent storage, as well
+  as the funding transaction.
 * Remove any timeout it created in
   `c=.sip.intend_to_fund_channel`.
 * Broadcast the fully-signed transaction.
@@ -1766,7 +1859,7 @@ Then, the LSP returns the following object from
 { }
 ```
 
-Once the LSP succeeds the call, the LSP MUST send a [BOLT 2
+Once the LSP succeeds this call, the LSP MUST send a [BOLT 2
 `channel_ready` Message][] for the channel.
 
 Once the LSP and client have exchanged `channel_ready`, the
@@ -1781,6 +1874,9 @@ channel open has aborted.
 
 In such a case, the LSP can simply consider the channel funding
 to have aborted.
+
+The LSP and client can forget the nonce information in case the
+channel funding has aborted.
 
 However, once the LSP has sent `funding_signed`, the BOLT
 specification considers the channel to be "real" even across
@@ -1870,6 +1966,12 @@ The LSP SHOULD use its normal `minimum_depth` setting to judge as
 [BIP-327]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki
 [BIP-327 PubKey Agg]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#user-content-Public_Key_Aggregation
 [BIP-327 Tweak PubKey Agg]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#tweaking-the-aggregate-public-key
+[BIP-327 Nonce Generation]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#nonce-generation-1
+[BIP-327 Nonce Aggregation]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#nonce-aggregation
+[BIP-327 Session Context]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#session-context
+[BIP-327 Signing]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#signing
+[BIP-327 Partial Signature Verification]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#partial-signature-verification
+[BIP-327 Partial Signature Aggregation]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#partial-signature-aggregation
 [BIP-340]: https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki
 [BIP-341]: https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki
 [BIP-341 Signature Validation]: https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki#user-content-Signature_validation_rules
