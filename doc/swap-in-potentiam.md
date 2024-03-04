@@ -469,8 +469,8 @@ have an anchor output controlled by Bob.
 > Thus, it must be given an anchor output for its own security, so
 > that it can pay for additional fees to confirm the transaction.
 
-Anchor outputs have an amount of 330 satoshis, and has a Taproot
-`scriptPubKey`.
+Anchor outputs have an amount of 330 satoshis, and has a SegWit v0
+P2WSH `scriptPubKey`.
 Logically, they are `Bob || CSV(16)`.
 
 The anchor output is described in [BOLT 3 Anchor Output][].
