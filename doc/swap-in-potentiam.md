@@ -371,7 +371,7 @@ Agg] to generate `S`, with `is_xonly_t` being `true`.
 Determine the sign of the Y coordinate of `S` (this is necessary later
 on spending), then extract the X coordinate.
 The X coordinate of `S` is then the 32-byte SegWit v1 address, which
-is then passed to a bech32m encoder to generate the address.
+is then passed to a [BIP-350][] bech32m encoder to generate the address.
 
 #### Test Vectors For Address Generation
 
@@ -1975,6 +1975,7 @@ The LSP SHOULD use its normal `minimum_depth` setting to judge as
 [BIP-340]: https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki
 [BIP-341]: https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki
 [BIP-341 Signature Validation]: https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki#user-content-Signature_validation_rules
+[BIP-350]: https://github.com/bitcoin/bips/blob/master/bip-0350.mediawiki
 [BIP-370]: https://github.com/bitcoin/bips/blob/master/bip-0370.mediawiki
 [BIP-371]: https://github.com/bitcoin/bips/blob/master/bip-0371.mediawiki
 [BOLT 1 `error` Message]: https://github.com/lightning/bolts/blob/master/01-messaging.md#the-error-and-warning-messages
