@@ -350,7 +350,7 @@ Compute the tapleaf hashes for each of the two tapscripts above, as follows:
 
 * `tagged_hash("TapLeaf", (0xc0 || scriptlen || script))`
   - `scriptlen` is 1 byte, the length of the script
-    (68 (`0x44`) for the 2-of-2 Tapleaf script, 40 (`0x40`) for
+    (68 (`0x44`) for the 2-of-2 Tapleaf script, 40 (`0x28`) for
     the timelock Tapleaf script)
 
 Determine which tapleaf hash is lexicographically lesser than the other.
