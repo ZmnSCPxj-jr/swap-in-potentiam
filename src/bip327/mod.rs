@@ -1,7 +1,9 @@
 use secp256k1::PublicKey;
 use secp256k1::Scalar;
 use secp256k1::Secp256k1;
+use secp256k1::SecretKey;
 use secp256k1::Verification;
+use secp256k1::scalar::OutOfRangeError;
 use super::bip340::tagged_hash;
 
 pub(crate) struct KeyAggContext {
@@ -10,7 +12,108 @@ pub(crate) struct KeyAggContext {
 	gacc: bool /* true == 1, false == -1 mod n */
 }
 
+impl KeyAggContext {
+	/* BIP-327 ApplyTweak.  */
+	pub(crate)
+	fn apply_tweak<C>( &self
+			 , secp256k1: &Secp256k1<C>
+			 , tweak: [u8; 32]
+			 , is_xonly_t: bool
+			 ) -> Option<Self>
+				where C: Verification {
+		let KeyAggContext{q, tacc, gacc} = self;
+		let g = if is_xonly_t && !has_even_y(q) {
+			false /* == -1 mod n */
+		} else {
+			true /* == 1 */
+		};
 
+		let t = Scalar::from_be_bytes(tweak).ok()?;
+
+		/* g*Q */
+		let q_part1 = if g {
+			q.negate(secp256k1)
+		} else {
+			q.clone()
+		};
+		/* g*Q + t*G */
+		let q_prime = q_part1.add_exp_tweak(secp256k1, &t)
+		.ok()?;
+
+		let gacc_prime = if !g /* => g == -1 mod n */ {
+			!*gacc /* negate the sign.  */
+		} else {
+			*gacc /* keep the sign.  */
+		};
+
+		let tacc_prime = if tacc == &Scalar::ZERO {
+			/* secp256k1 library does not support
+			 * tweaking of scalar, only tweaking of
+			 * private key.
+			 */
+			t
+		} else {
+			/* g*tacc */
+			let tacc_prime_second = if g {
+				/* No negation, just copy.  */
+				tacc.clone()
+			} else {
+				/* Need to negate!
+				 * We already checked if tacc
+				 * was zero above, and the
+				 * only case where the conversion
+				 * from Scalar to SecretKey would
+				 * fail is if the Scalar is 0.
+				 */
+				Scalar::from(
+					SecretKey::from_slice(
+						&tacc.clone().to_be_bytes()
+					).expect("already checked 0")
+					.negate()
+				)
+			};
+			/* Do we have to add t?  */
+			if t == Scalar::ZERO {
+				tacc_prime_second
+			} else {
+				let sum = SecretKey::from_slice(
+					&t.to_be_bytes()
+				).expect("already checked 0")
+				.add_tweak(&tacc_prime_second);
+				/* add_tweak can fail if the sum
+				 * is zero.
+				 * Scalar has no addition operation
+				 * (or negation, or multiplication,
+				 * or....) so we convert to SecretKey,
+				 * but now the problem is that
+				 * SecretKey does not allow zero.
+				 */
+				match sum {
+					/* This error only happens
+					 * if the sum is zero.
+					 */
+					Err(_) => Scalar::ZERO,
+					Ok(sum) => Scalar::from(sum)
+				}
+			}
+		};
+
+		Some(
+			KeyAggContext {
+				q: q_prime,
+				tacc: tacc_prime,
+				gacc: gacc_prime
+			}
+		)
+	}
+}
+
+fn has_even_y(q: &PublicKey) -> bool {
+	let ser = q.serialize();
+	return ser[0] == 0x02;
+}
+
+/* BIP-327 KeyAgg */
 pub(crate) fn key_agg<C>( secp256k1: &Secp256k1<C>
 			, pk: &[PublicKey]
 			) -> KeyAggContext
