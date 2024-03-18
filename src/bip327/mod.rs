@@ -119,9 +119,6 @@ pub(crate) fn key_agg<C>( secp256k1: &Secp256k1<C>
 			) -> KeyAggContext
 	where C: Verification
 {
-	let scalar_one: Scalar = Scalar::from_be_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]).expect("constant");
-	let scalar_zero: Scalar = Scalar::from_be_bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).expect("constant");
-
 	let l = hash_keys(pk);
 
 	let pk2 = get_second_key(pk);
@@ -131,7 +128,7 @@ pub(crate) fn key_agg<C>( secp256k1: &Secp256k1<C>
 	for pk_prime in pk {
 		/* KeyAggCoeffInternal */
 		if pk2 < pk.len() && pk_prime == &pk[pk2] {
-			a.push(scalar_one);
+			a.push(Scalar::ONE);
 		} else {
 			let mut buf = Vec::new();
 			buf.extend_from_slice(&l);
@@ -154,7 +151,7 @@ pub(crate) fn key_agg<C>( secp256k1: &Secp256k1<C>
 
 	return KeyAggContext{
 		q: q,
-		tacc: scalar_zero,
+		tacc: Scalar::ZERO,
 		gacc: true
 	};
 }
