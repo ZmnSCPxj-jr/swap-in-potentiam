@@ -106,6 +106,13 @@ impl KeyAggContext {
 			}
 		)
 	}
+	/* BIP-327 GetXonlyPubKey */
+	pub(crate)
+	fn get_xonly_pubkey(&self) -> [u8; 32] {
+		let KeyAggContext{q: q, tacc: _, gacc: _} = self;
+		let ser = q.serialize();
+		ser[1..33].try_into().expect("constant bounds")
+	}
 }
 
 fn has_even_y(q: &PublicKey) -> bool {
