@@ -5,6 +5,8 @@ use secp256k1::SecretKey;
 use secp256k1::Verification;
 use secp256k1::scalar::OutOfRangeError;
 use super::bip340::tagged_hash;
+use super::scalars::scalar_negate;
+use super::scalars::scalar_plus;
 
 pub(crate) struct KeyAggContext {
 	q: PublicKey,
@@ -46,57 +48,10 @@ impl KeyAggContext {
 			*gacc /* keep the sign.  */
 		};
 
-		let tacc_prime = if tacc == &Scalar::ZERO {
-			/* secp256k1 library does not support
-			 * tweaking of scalar, only tweaking of
-			 * private key.
-			 */
-			t
-		} else {
-			/* g*tacc */
-			let tacc_prime_second = if g {
-				/* No negation, just copy.  */
-				tacc.clone()
-			} else {
-				/* Need to negate!
-				 * We already checked if tacc
-				 * was zero above, and the
-				 * only case where the conversion
-				 * from Scalar to SecretKey would
-				 * fail is if the Scalar is 0.
-				 */
-				Scalar::from(
-					SecretKey::from_slice(
-						&tacc.clone().to_be_bytes()
-					).expect("already checked 0")
-					.negate()
-				)
-			};
-			/* Do we have to add t?  */
-			if t == Scalar::ZERO {
-				tacc_prime_second
-			} else {
-				let sum = SecretKey::from_slice(
-					&t.to_be_bytes()
-				).expect("already checked 0")
-				.add_tweak(&tacc_prime_second);
-				/* add_tweak can fail if the sum
-				 * is zero.
-				 * Scalar has no addition operation
-				 * (or negation, or multiplication,
-				 * or....) so we convert to SecretKey,
-				 * but now the problem is that
-				 * SecretKey does not allow zero.
-				 */
-				match sum {
-					/* This error only happens
-					 * if the sum is zero.
-					 */
-					Err(_) => Scalar::ZERO,
-					Ok(sum) => Scalar::from(sum)
-				}
-			}
-		};
+		/* tacc' = t + g*tacc */
+		let tacc_prime = scalar_plus( &t
+					    , &if g { tacc.clone() } else { scalar_negate(tacc) }
+					    );
 
 		Some(
 			KeyAggContext {
