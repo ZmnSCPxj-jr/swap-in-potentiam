@@ -188,22 +188,26 @@ mod tests {
 	use hex;
 	use super::*;
 
-	fn check_key_agg(pk_s: &[&str], q_s: &str) {
+	fn point_txt(pk_s: &str) -> PublicKey {
+		let buf = hex::decode(pk_s)
+		.expect("Test iput must be hex");
+		PublicKey::from_slice(&buf)
+		.expect("Test input must be a non-infinite point")
+	}
+
+	fn key_agg_txt(pk_s: &[&str]) -> KeyAggContext {
 		let mut pk = Vec::new();
 		for pk_s1 in pk_s {
-			let buf = hex::decode(pk_s1)
-			.expect("Test input must be hex");
-			let pk1 = PublicKey::from_slice(&buf)
-			.expect("Test input must be a point");
-			pk.push(pk1);
+			pk.push(point_txt(pk_s1));
 		}
-		let buf_q = hex::decode(q_s)
-		.expect("Test input must be hex");
-		let q = PublicKey::from_slice(&buf_q)
-		.expect("Test input must be a point");
 
 		let s_ctx = Secp256k1::new();
-		let result = key_agg(&s_ctx, &pk);
+		key_agg(&s_ctx, &pk)
+	}
+
+	fn check_key_agg(pk_s: &[&str], q_s: &str) {
+		let result = key_agg_txt(pk_s);
+		let q = point_txt(q_s);
 
 		assert_eq!(result.q, q);
 	}
@@ -239,5 +243,63 @@ mod tests {
 		check_key_agg(&["028a3ba5c99568d26602f4cf8038371da3c86057a96eb1b6a8de1b4f1be723c236",
 				"02de2848d46044aec16ea7b73233f2709f15b9bfeb720dd5d5ae595cfa51e01f15"],
 			      "0359774215a479bd01274044024c52dcd5e37e50f5d3596cc374eaf5035ebc884d");
+	}
+
+	fn check_apply_tweak( pk_s: &[&str] // public keys
+			    , t_s: &[(&str, bool)] // tweaks and is-xonly flags
+			    , q_s: &str
+			    , gacc: bool
+			    ) {
+		let s_ctx = Secp256k1::new();
+
+		let ini = key_agg_txt(pk_s);
+		let fin = t_s.iter().fold(ini, |prev, (t_s, is_xonly)| {
+			let t = hex::decode(t_s)
+			.expect("tweak mnust be hex")
+			.try_into()
+			.expect("tweak must be 32 bytes");
+
+			prev.apply_tweak(&s_ctx, t, *is_xonly)
+			.unwrap()
+		});
+
+		let q = point_txt(q_s);
+
+		assert_eq!(fin.q, q);
+		assert_eq!(fin.gacc, gacc);
+	}
+
+	#[test]
+	fn test_apply_tweak() {
+		/* https://github.com/bitcoin/bips/blob/master/bip-0327/vectors/tweak_vectors.json */
+		check_apply_tweak( &[ "02F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9"
+				    , "02DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659"
+				    , "03935F972DA013F80AE011890FA89B67A27B7BE6CCB24D3274D18B2D4067F261A9"
+				    ]
+				 , &[ ( "E8F791FF9225A2AF0102AFFF4A9A723D9612A682A25EBE79802B263CDFCD83BB"
+				      , true
+				      )
+				    ]
+				 , "03c7a4356ba33438b49ef0141e9f00eb8146d21ca1e4fcd7f7fecefac2ba4943de"
+				 , false
+				 );
+		check_apply_tweak( &[ "02F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9"
+				    , "02DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659"
+				    , "03935F972DA013F80AE011890FA89B67A27B7BE6CCB24D3274D18B2D4067F261A9"
+				    ]
+				 , &[ ( "E8F791FF9225A2AF0102AFFF4A9A723D9612A682A25EBE79802B263CDFCD83BB"
+				      , false
+				      )
+				    ]
+				 , "03643547cfd6c931f47fe806570e44ffc2460d77057e1506b2b7a1ab73b7f07dfe"
+				 , true
+				 );
+		/* Minor rant: turns out BIP-327 has NO
+		 * actual test vectors for the ApplyTweak
+		 * algorithm *only* --- there are test
+		 * vectors for signing after tweaking,
+		 * but not for the resulting key.
+		 * *sigh*
+		 */
 	}
 }
