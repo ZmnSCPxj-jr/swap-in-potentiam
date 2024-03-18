@@ -33,7 +33,7 @@ impl KeyAggContext {
 		let t = Scalar::from_be_bytes(tweak).ok()?;
 
 		/* g*Q */
-		let q_part1 = if g {
+		let q_part1 = if !g {
 			q.negate(secp256k1)
 		} else {
 			q.clone()
@@ -235,7 +235,7 @@ mod tests {
 				      , true
 				      )
 				    ]
-				 , "03c7a4356ba33438b49ef0141e9f00eb8146d21ca1e4fcd7f7fecefac2ba4943de"
+				 , "03643547cfd6c931f47fe806570e44ffc2460d77057e1506b2b7a1ab73b7f07dfe"
 				 , false
 				 );
 		check_apply_tweak( &[ "02F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9"
@@ -246,7 +246,7 @@ mod tests {
 				      , false
 				      )
 				    ]
-				 , "03643547cfd6c931f47fe806570e44ffc2460d77057e1506b2b7a1ab73b7f07dfe"
+				 , "03c7a4356ba33438b49ef0141e9f00eb8146d21ca1e4fcd7f7fecefac2ba4943de"
 				 , true
 				 );
 		/* Minor rant: turns out BIP-327 has NO
