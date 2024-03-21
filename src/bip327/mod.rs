@@ -3,15 +3,46 @@ use secp256k1::Scalar;
 use secp256k1::Secp256k1;
 use secp256k1::SecretKey;
 use secp256k1::Verification;
-use secp256k1::scalar::OutOfRangeError;
 use super::bip340::tagged_hash;
 use super::scalars::scalar_negate;
 use super::scalars::scalar_plus;
 
+/* Type for the gacc field of KeyAggContext*/
+#[derive(Debug, PartialEq)]
+enum Gacc {
+	PlusOne,
+	MinusOne
+}
+impl Gacc {
+	fn times(&self, a: &Self) -> Self {
+		match (self, a) {
+			(Self::PlusOne, Self::PlusOne) => Self::PlusOne,
+			(Self::MinusOne, Self::MinusOne) => Self::PlusOne,
+			_ => Self::MinusOne
+		}
+	}
+	fn times_scalar(&self, a: &Scalar) -> Scalar {
+		match self {
+			Self::PlusOne => a.clone(),
+			Self::MinusOne => scalar_negate(a)
+		}
+	}
+	fn times_pubkey<C>( &self
+			  , secp256k1: &Secp256k1<C>
+			  , p: &PublicKey
+			  ) -> PublicKey
+			where C: Verification {
+		match self {
+			Self::PlusOne => p.clone(),
+			Self::MinusOne => p.negate(secp256k1)
+		}
+	}
+}
+
 pub(crate) struct KeyAggContext {
 	q: PublicKey,
 	tacc: Scalar,
-	gacc: bool /* true == 1, false == -1 mod n */
+	gacc: Gacc
 }
 
 impl KeyAggContext {
@@ -25,32 +56,24 @@ impl KeyAggContext {
 				where C: Verification {
 		let KeyAggContext{q, tacc, gacc} = self;
 		let g = if is_xonly_t && !has_even_y(q) {
-			false /* == -1 mod n */
+			Gacc::MinusOne
 		} else {
-			true /* == 1 */
+			Gacc::PlusOne
 		};
 
 		let t = Scalar::from_be_bytes(tweak).ok()?;
 
 		/* g*Q */
-		let q_part1 = if !g {
-			q.negate(secp256k1)
-		} else {
-			q.clone()
-		};
+		let q_part1 = g.times_pubkey(secp256k1, q);
 		/* g*Q + t*G */
 		let q_prime = q_part1.add_exp_tweak(secp256k1, &t)
 		.ok()?;
 
-		let gacc_prime = if !g /* => g == -1 mod n */ {
-			!*gacc /* negate the sign.  */
-		} else {
-			*gacc /* keep the sign.  */
-		};
+		let gacc_prime = g.times(gacc);
 
 		/* tacc' = t + g*tacc */
 		let tacc_prime = scalar_plus( &t
-					    , &if g { tacc.clone() } else { scalar_negate(tacc) }
+					    , &g.times_scalar(tacc)
 					    );
 
 		Some(
@@ -114,7 +137,7 @@ pub(crate) fn key_agg<C>( secp256k1: &Secp256k1<C>
 	return KeyAggContext{
 		q: q,
 		tacc: Scalar::ZERO,
-		gacc: true
+		gacc: Gacc::PlusOne
 	};
 }
 
@@ -203,7 +226,7 @@ mod tests {
 	fn check_apply_tweak( pk_s: &[&str] // public keys
 			    , t_s: &[(&str, bool)] // tweaks and is-xonly flags
 			    , q_s: &str
-			    , gacc: bool
+			    , gacc: Gacc
 			    ) {
 		let s_ctx = Secp256k1::new();
 
@@ -236,7 +259,7 @@ mod tests {
 				      )
 				    ]
 				 , "03643547cfd6c931f47fe806570e44ffc2460d77057e1506b2b7a1ab73b7f07dfe"
-				 , false
+				 , Gacc::MinusOne
 				 );
 		check_apply_tweak( &[ "02F9308A019258C31049344F85F89D5229B531C845836F99B08601F113BCE036F9"
 				    , "02DFF1D77F2A671C5F36183726DB2341BE58FEAE1DA2DECED843240F7B502BA659"
@@ -247,7 +270,7 @@ mod tests {
 				      )
 				    ]
 				 , "03c7a4356ba33438b49ef0141e9f00eb8146d21ca1e4fcd7f7fecefac2ba4943de"
-				 , true
+				 , Gacc::PlusOne
 				 );
 		/* Minor rant: turns out BIP-327 has NO
 		 * actual test vectors for the ApplyTweak
