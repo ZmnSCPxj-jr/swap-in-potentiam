@@ -97,7 +97,8 @@ instead and negates the private key for the node ID before
 signing.
 
 The public keys `A` and `B` are sorted based on the lexicographic
-ordering of the X-coordinate in big-endian form.
+ordering of the X-coordinate in big-endian form, ***and*** ignoring
+the sign of the Y-coordinate.
 This is equivalent to the lexicographic ordering of the [BIP-340][]
 X-only public key.
 These are `P[0]` and `P[1]`, with `P[0]` being whichever of `A` or
@@ -136,6 +137,16 @@ The tapleaf scripts, when serialized:
   - 32 bytes: The X coordinate of `A` in big-endian order
   - `0xAC` (`OP_CHECKSIG`)
   - 40 witness bytes total
+
+> **Rationale** The first tapleaf branch is effectively a repeat
+> of the keypath spend path, and is technically superfluous.
+>
+> This branch exists as we intend to use PSBT to support signing
+> of a spend from Alice-owned funds to onchain addresses or other
+> protocols (such as Payjoin) that use PSBT.
+> As of this writing, PSBT does not support signing using MuSig2.
+> While a BIP has been proposed to extend PSBTs to support MuSig2
+> signing, it is still under review and active design.
 
 ### Computing The Internal Public Key
 
@@ -201,6 +212,8 @@ has an odd Y coordinate.
 > assuming Alice does not publicize its public key, then it is not
 > possible for an onchain observer to determine which Bob is being
 > used, or even that this is a swap-in-potentiam address.
+> Thus, a keypath spend of the MuSig of both Alice and Bob is used
+> in preparation for a future where we can use MuSig2 with PSBTs.
 
 #### Test Vectors For Internal Public Key Derivation
 
@@ -366,7 +379,8 @@ of [BIP-327 tweaking of aggregate public key][BIP-327 Tweak PubKey
 Agg] to generate `S`, with `is_xonly_t` being `true`.
 
 * `S = ApplyTweak(Q, tagged_hash("TapTweak", GetXonlyPubkey(Q) || r), true)`
-  * `GetXonlyPubkey` is described in [BIP-327][].
+  * `GetXonlyPubkey` is described in [BIP-327][]; it simply
+    extracts the X coordinate of `Q`.
 
 Determine the sign of the Y coordinate of `S` (this is necessary later
 on spending), then extract the X coordinate.
@@ -397,9 +411,9 @@ The `witness`, from stack bottom to stack top, is:
 2.  Signature from `P[0]` (`B` if `A.x > B.x`, else `A`)
 3.  The script `<P[0]> OP_CHECKSIGVERIFY <P[1]> OP_CHECKSIG`
 4.  The control block, the concatenation of:
-    - 1 byte: `0xC0` bitwise-ORed with the sign of the
-      tweaked output key `S` (0 if `S` has even Y
-      coordinate, 1 if `S` has odd Y coordinate).
+    - 1 byte: Depending on `S` Y coordinate:
+      - `0xC0` if `S` has an even Y coordinate.
+      - `0xC1` if `S` has an odd Y coordinate.
     - 32 bytes: `Q.x`, the X coordinate of `Q`.
     - 32 bytes: The `tagged_hash` with tag `"TapLeaf"` of the
       concatenation of:
@@ -439,9 +453,9 @@ The `witness`, from stack bottom to stack top, is:
 2.  The script
     `<4032 blocks> OP_CHECKSEQUENCEVERIFY OP_DROP <A> OP_CHECKSIG`
 3.  The control block, the concatenation of:
-    - 1 byte: `0xC0` bitwise-ORed with the sign of the
-      tweaked output key `S` (0 if `S` has even Y
-      coordinate, 1 if `S` has odd Y coordinate).
+    - 1 byte: Depending on `S` Y coordinate:
+      - `0xC0` if `S` has an even Y coordinate.
+      - `0xC1` if `S` has an odd Y coordinate.
     - 32 bytes: `Q.x`, the X coordinate of `Q`.
     - 32 bytes: The `tagged_hash` with tag `"TapLeaf"` of the
       concatenation of:
