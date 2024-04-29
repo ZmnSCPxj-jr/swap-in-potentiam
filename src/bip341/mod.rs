@@ -202,3 +202,6 @@ fn taproot_output_script<C>( s_ctx: &Secp256k1<C>
 	buf.extend_from_slice(&output_pubkey);
 	return Some(buf);
 }
+
+pub(crate)
+const TAPROOT_TAPLEAF_VERSION: u8 = 0xC0;
