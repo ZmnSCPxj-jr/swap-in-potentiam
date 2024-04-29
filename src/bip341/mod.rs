@@ -1,3 +1,8 @@
+use secp256k1::PublicKey;
+use secp256k1::Scalar;
+use secp256k1::Secp256k1;
+use secp256k1::Verification;
+use super::bip340::lift_x;
 use super::bip340::tagged_hash;
 
 pub(crate)
@@ -134,4 +139,66 @@ fn taproot_tree_helper(script_tree: TapTree) -> (Vec<Info>, [u8; 32]) {
 			)
 		}
 	}
+}
+
+pub(crate)
+enum Bit { Bit0, Bit1 }
+
+pub(crate)
+fn taproot_tweak_pubkey<C>( s_ctx: &Secp256k1<C>
+			  , pubkey: &[u8; 32]
+			  , h: &[u8]
+			  ) -> Option<(Bit, [u8; 32])>
+				where C: Verification {
+	// t = int_from_bytes(tagged_hash("TapTweak", pubkey + h))
+	let mut concat = Vec::new();
+	concat.extend_from_slice(pubkey);
+	concat.extend_from_slice(h);
+	let t = Scalar::from_be_bytes(
+		tagged_hash("TapTweak", &concat)
+	).ok()?;
+
+	// P = lift_x(int_from_bytes(pubkey))
+	let capital_p = lift_x(pubkey)?;
+
+	// Q = point_add(P, point_mul(G, t))
+	let capital_q = capital_p.mul_tweak(s_ctx, &t).ok()?;
+
+	let capital_q_ser = capital_q.serialize();
+	let capital_q_x = capital_q_ser[1..33].try_into().expect("constant array indices");
+
+	let rv = ( if has_even_y(&capital_q) {Bit::Bit0} else {Bit::Bit1}
+		 , capital_q_x
+		 );
+	Some(rv)
+}
+// TODO: factor out this common code in BIP-327 and BIP-341
+fn has_even_y(q: &PublicKey) -> bool {
+	let ser = q.serialize();
+	return ser[0] == 0x02;
+}
+
+pub(crate)
+fn taproot_output_script<C>( s_ctx: &Secp256k1<C>
+			   , internal_pubkey: &[u8; 32]
+			   , script_tree: Option<TapTree>
+			   ) -> Option<Vec<u8>>
+				where C: Verification {
+	let h = match script_tree {
+		None => { Vec::new() },
+		Some(t) => {
+			let (_, h) = taproot_tree_helper(t);
+			h.to_vec()
+		}
+	};
+	let (_, output_pubkey) = taproot_tweak_pubkey( s_ctx
+						     , internal_pubkey
+						     , &h
+						     )?;
+	let mut buf = Vec::new();
+	buf.extend_from_slice(&[ 0x51 // SegWit v1
+			       , 0x20 // Push 32 bytes
+			       ]);
+	buf.extend_from_slice(&output_pubkey);
+	return Some(buf);
 }
