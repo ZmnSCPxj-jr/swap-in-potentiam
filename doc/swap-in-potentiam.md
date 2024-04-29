@@ -109,7 +109,9 @@ We create two tapscripts: one is a two-of-two between Alice and Bob, the
 other is Alice only, with a relative timelock via `OP_CHECKSEQUENCEVERIFY`:
 
 * `<P[0]> OP_CHECKSIGVERIFY <P[1]> OP_CHECKSIG`
+  - 2-of-2 Tapleaf Path
 * `<4032 blocks> OP_CHECKSEQUENCEVERIFY OP_DROP <A> OP_CHECKSIG`
+  - Timelock Timeout Path
 
 The above are the leaves in the Taproot tree, with leaf version `0xC0`.
 
@@ -351,7 +353,8 @@ prepended with the leaf version `0xC0`, then assembled into a Merkle Tree.
 The Merkle Tree root hash is then used to tweak the above internal public
 key.
 
-We define a "tagged hash", as follows:
+We define a "tagged hash", as follows (this is the same as the
+definition in [BIP-340 Design][] paragraph "Tagged Hashes"):
 
 * `tagged_hash(tag : vector<u8>, input : vector<u8>)`
   * `= sha256(sha256(tag) || sha256(tag) || input)`
@@ -388,6 +391,34 @@ The X coordinate of `S` is then the 32-byte SegWit v1 address, which
 is then passed to a [BIP-350][] bech32m encoder to generate the address.
 
 #### Test Vectors For Address Generation
+
+##### Address Generation Test Vector 1
+
+* Alice key: `02c6b754b20826eb925e052ee2c25285b162b51fdca732bcf67e39d647fb6830ae`
+* Bob key: `03659a69ea86e2f183895be58802e203eff51956e931c6282ed77ab4c4385711b3`
+
+```
+A = 02c6b754b20826eb925e052ee2c25285b162b51fdca732bcf67e39d647fb6830ae
+B = 03659a69ea86e2f183895be58802e203eff51956e931c6282ed77ab4c4385711b3
+A.x = c6b754b20826eb925e052ee2c25285b162b51fdca732bcf67e39d647fb6830ae
+B.x = 659a69ea86e2f183895be58802e203eff51956e931c6282ed77ab4c4385711b3
+A.x > B.x (P0 = B, P1 = A)
+P0 = 659a69ea86e2f183895be58802e203eff51956e931c6282ed77ab4c4385711b3
+P1 = c6b754b20826eb925e052ee2c25285b162b51fdca732bcf67e39d647fb6830ae
+KeyAgg([ 02659a69ea86e2f183895be58802e203eff51956e931c6282ed77ab4c4385711b3
+       , 02c6b754b20826eb925e052ee2c25285b162b51fdca732bcf67e39d647fb6830ae
+       ]) = 026962aca1c57320eaa40f949928d3477f2eeb3ffdb7e3d7296c1f57608d2d2c69
+_2_of_2_tapleaf_path = 20659a69ea86e2f183895be58802e203eff51956e931c6282ed77ab4c4385711b3ad20c6b754b20826eb925e052ee2c25285b162b51fdca732bcf67e39d647fb6830aeac
+timelock_tapleaf_path = 03c00f00b27520c6b754b20826eb925e052ee2c25285b162b51fdca732bcf67e39d647fb6830aeac
+_2_of_2_tapleaf_path_hash = tagged_hash("TapLeaf", 0xC0 || 0x44 || _2_of_2_tapleaf_path)
+                          = 6a3d6cef744256400f4a7ae5e5f72b04cb8668c117d47d6df325e5c13e8acef3
+timelock_tapleaf_path_hash = tagged_hash("TapLeaf", 0xC0 || 0x28 || timelock_tapleaf_path)
+                           = b15e91cdc464dfdb2f19faa6fcb96d5fb58773452f6afcfe251ed1cf83f1576a
+_2_of_2_tapleaf_path_hash < timelock_tapleaf_path_hash
+h0 = 6a3d6cef744256400f4a7ae5e5f72b04cb8668c117d47d6df325e5c13e8acef3
+h1 = b15e91cdc464dfdb2f19faa6fcb96d5fb58773452f6afcfe251ed1cf83f1576a
+TODO
+```
 
 TODO
 
@@ -1046,9 +1077,9 @@ The fields of `sip_offchain_info` are:
 > operations.
 
 The LSP MAY add other fields to the `sip_offchain_info` object.
-The client MUST include all fields of `sip_offchain_info`,
-including fields it does not recognize, when providing the
-swap-in-potentiam information in other calls, such as to
+The client MUST include only the fields of `sip_offchain_info`
+that it recognizes when providing the swap-in-potentiam
+information in other calls, such as to
 `c=.sip.intend_to_fund_channel`.
 
 #### Swap-in-potentiam Transaction Output Deadline
@@ -1987,6 +2018,7 @@ The LSP SHOULD use its normal `minimum_depth` setting to judge as
 [BIP-327 Partial Signature Verification]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#partial-signature-verification
 [BIP-327 Partial Signature Aggregation]: https://github.com/bitcoin/bips/blob/master/bip-0327.mediawiki#partial-signature-aggregation
 [BIP-340]: https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki
+[BIP-340 Design]: https://github.com/bitcoin/bips/blob/master/bip-0340.mediawiki#design
 [BIP-341]: https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki
 [BIP-341 Signature Validation]: https://github.com/bitcoin/bips/blob/master/bip-0341.mediawiki#user-content-Signature_validation_rules
 [BIP-350]: https://github.com/bitcoin/bips/blob/master/bip-0350.mediawiki
