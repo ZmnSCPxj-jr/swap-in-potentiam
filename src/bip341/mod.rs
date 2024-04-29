@@ -5,7 +5,6 @@ struct TapLeaf {
 	version: u8,
 	script: Vec<u8>
 }
-
 impl TapLeaf {
 	pub(crate)
 	fn new(version: u8, script: Vec<u8>) -> Self
@@ -27,9 +26,22 @@ impl TapTree {
 			 ) -> Self {
 		use TapTree::TapTreeLeaf;
 		use TapTree::TapTreeBranch;
-		let left = TapTreeLeaf(TapLeaf::new(version0, script0));
-		let right = TapTreeLeaf(TapLeaf::new(version1, script1));
+		let left = Self::new_from_script(version0, script0);
+		let right = Self::new_from_script(version1, script1);
 		TapTreeBranch(Box::new(left), Box::new(right))
+	}
+	pub(crate)
+	fn new_from_script( version: u8, script: Vec<u8>) -> Self {
+		use TapTree::TapTreeLeaf;
+		TapTreeLeaf(TapLeaf::new(version, script))
+	}
+	/* swap-in-potentiam also uses BIP-327, which has its
+	own tweak-the-public-key code.
+	*/
+	pub(crate)
+	fn to_hash(self) -> [u8; 32] {
+		let (_, h) = taproot_tree_helper(self);
+		return h;
 	}
 }
 
