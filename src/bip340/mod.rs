@@ -1,4 +1,5 @@
 use hashes::sha2::sha256;
+use secp256k1::PublicKey;
 
 pub fn tagged_hash(tag: &str, message: &[u8]) -> [u8; 32] {
 	let sha_tag = sha256::hash(tag.as_bytes()).into_bytes();
@@ -13,6 +14,12 @@ pub fn tagged_hash(tag: &str, message: &[u8]) -> [u8; 32] {
 	fin_buf.clone_from_slice(&fin_hash.into_bytes());
 
 	fin_buf
+}
+pub fn lift_x(x: &[u8; 32]) -> Option<PublicKey> {
+	let mut buf = Vec::new();
+	buf.extend_from_slice(&[0x02]); // SEC compressed format even Y
+	buf.extend_from_slice(x);
+	PublicKey::from_slice(&buf).ok()
 }
 
 #[cfg(test)]
