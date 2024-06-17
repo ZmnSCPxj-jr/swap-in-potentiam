@@ -48,6 +48,30 @@ fn get_aggkey_and_tweak<C>( secp256k1: &Secp256k1<C>
 	(aggkey, tweak)
 }
 
+/**
+`derive_taproot_xonly_pubkey` generates the x-only
+public key, returned as a 32-byte array, from the
+given `alice` and `bob` public keys.
+
+The operation may fail (return None) on the edge
+case that the Taproot address becomes the point
+at infinity.
+The probability of that happening should be
+negligibly low (to a cryptographer, i.e.
+universe heat death is more likely to come
+before you get that case).
+
+The `scriptPubKey` can be derived from this by
+prepending bytes 0x51 0x20, which is done by
+`derive_taproot_scriptpubkey`.
+
+An address can be derived for the returned
+Taproot Xonly pubkey by running the return
+value of this function to a bech32m library,
+giving the SegWit version 1.
+TODO: A function to give a string bech32m
+address.
+*/
 pub
 fn derive_taproot_xonly_pubkey<C>( secp256k1: &Secp256k1<C>
 				 , alice: &PublicKey
@@ -66,6 +90,42 @@ fn derive_taproot_xonly_pubkey<C>( secp256k1: &Secp256k1<C>
 	)?;
 
 	Some(final_pubkey.get_xonly_pubkey())
+}
+
+/**
+`derive_taproot_scriptpubkey` generates the `scriptPubKey`
+to be used for a swap-in-potentiam address whose Alice
+(user) and Bob (LSP node ID) are the given public keys.
+
+The operation may fail (return None) on the edge
+case that the Taproot address becomes the point
+at infinity.
+The probability of that happening should be
+negligibly low (to a cryptographer, i.e.
+universe heat death is more likely to come
+before you get that case).
+
+You might use this for an Electrum-based SPV
+interface; you will need to convert the result
+of this function to the "script hash" required
+by the `blockchain.scripthash.*` methods by
+using SHA256 on the result.
+*/
+pub
+fn derive_taproot_scriptpubkey<C>( secp256k1: &Secp256k1<C>
+				 , alice: &PublicKey
+				 , bob: &PublicKey
+				 ) -> Option<Vec<u8>>
+	where C: Verification
+{
+	let xonly_pubkey = derive_taproot_xonly_pubkey(
+		secp256k1, alice, bob
+	)?;
+
+	let mut buf = Vec::new();
+	buf.extend_from_slice(&[0x51, 0x20]);
+	buf.extend_from_slice(&xonly_pubkey);
+	return Some(buf);
 }
 
 #[cfg(test)]
