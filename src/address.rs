@@ -26,6 +26,28 @@ fn get_root_hash( alice: &PublicKey
 	taptree.to_hash()
 }
 
+fn get_aggkey_and_tweak<C>( secp256k1: &Secp256k1<C>
+			  , alice: &PublicKey
+			  , bob: &PublicKey
+			  ) -> (bip327::KeyAggContext, [u8; 32])
+	where C: Verification
+{
+	let root_hash = get_root_hash(alice, bob);
+
+	let pks = vec!(alice.clone(), bob.clone());
+	let aggkey = bip327::key_agg(secp256k1, &pks);
+
+	let xonly_aggkey = aggkey.get_xonly_pubkey();
+	let tweak = {
+		let mut concat = Vec::new();
+		concat.extend_from_slice(&xonly_aggkey);
+		concat.extend_from_slice(&root_hash);
+		bip340::tagged_hash("TapTweak", &concat)
+	};
+
+	(aggkey, tweak)
+}
+
 pub
 fn derive_taproot_xonly_pubkey<C>( secp256k1: &Secp256k1<C>
 				 , alice: &PublicKey
@@ -33,18 +55,9 @@ fn derive_taproot_xonly_pubkey<C>( secp256k1: &Secp256k1<C>
 				 ) -> Option<[u8; 32]>
 	where C: Verification
 {
-	let root_hash = get_root_hash(alice, bob);
-
-	let pks = vec!(alice.clone(), bob.clone());
-	let aggkey = bip327::key_agg(secp256k1, &pks);
-	let xonly_aggkey = aggkey.get_xonly_pubkey();
-
-	let tweak = {
-		let mut concat = Vec::new();
-		concat.extend_from_slice(&xonly_aggkey);
-		concat.extend_from_slice(&root_hash);
-		bip340::tagged_hash("TapTweak", &concat)
-	};
+	let (aggkey, tweak) = get_aggkey_and_tweak(
+		secp256k1, alice, bob
+	);
 
 	let final_pubkey = aggkey.apply_tweak(
 		secp256k1,
