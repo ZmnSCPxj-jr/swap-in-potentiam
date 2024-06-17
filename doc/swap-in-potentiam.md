@@ -417,6 +417,8 @@ timelock_tapleaf_path_hash = tagged_hash("TapLeaf", 0xC0 || 0x28 || timelock_tap
 _2_of_2_tapleaf_path_hash < timelock_tapleaf_path_hash
 h0 = 6a3d6cef744256400f4a7ae5e5f72b04cb8668c117d47d6df325e5c13e8acef3
 h1 = b15e91cdc464dfdb2f19faa6fcb96d5fb58773452f6afcfe251ed1cf83f1576a
+r = tagged_hash("TapBranch", h0 || h1)
+  = 9a7de09467b643aa9a636cb77488e60d822845ff38db30f8f486903fd552783b
 TODO
 ```
 
