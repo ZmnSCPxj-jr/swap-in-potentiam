@@ -1,7 +1,13 @@
+/*!
+The `address` module contains simple interfaces to *only*
+derive a swap-in-potentiam address from the user public key
+`alice` and some fixed LSP node ID `bob`.
+*/
 use secp256k1::PublicKey;
 use secp256k1::Secp256k1;
 use secp256k1::Verification;
 use super::bip327;
+use super::bip340;
 use super::bip341;
 use super::scripts;
 
@@ -31,10 +37,18 @@ fn derive_taproot_xonly_pubkey<C>( secp256k1: &Secp256k1<C>
 
 	let pks = vec!(alice.clone(), bob.clone());
 	let aggkey = bip327::key_agg(secp256k1, &pks);
+	let xonly_aggkey = aggkey.get_xonly_pubkey();
+
+	let tweak = {
+		let mut concat = Vec::new();
+		concat.extend_from_slice(&xonly_aggkey);
+		concat.extend_from_slice(&root_hash);
+		bip340::tagged_hash("TapTweak", &concat)
+	};
 
 	let final_pubkey = aggkey.apply_tweak(
 		secp256k1,
-		root_hash,
+		tweak,
 		true
 	)?;
 
