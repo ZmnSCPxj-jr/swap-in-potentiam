@@ -6,6 +6,7 @@ derive a swap-in-potentiam address from the user public key
 use secp256k1::PublicKey;
 use secp256k1::Secp256k1;
 use secp256k1::Verification;
+use super::Network;
 use super::bip327;
 use super::bip340;
 use super::bip341;
@@ -148,7 +149,7 @@ before you get that case).
 */
 pub
 fn derive_taproot_address<C>( secp256k1: &Secp256k1<C>
-			    , network: bip350::Network
+			    , network: Network
 			    , alice: &PublicKey
 			    , bob: &PublicKey
 			    ) -> Option<String>

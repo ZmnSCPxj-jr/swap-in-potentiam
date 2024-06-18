@@ -1,3 +1,5 @@
+use super::Network;
+
 const TABLE: [char; 32] =
 [ 'q', 'p', 'z', 'r', 'y', '9', 'x', '8'
 , 'g', 'f', '2', 't', 'v', 'd', 'w', '0'
@@ -9,14 +11,6 @@ const TABLE: [char; 32] =
 const BECH32_CONSTANT: u32 = 0x1;
 /* BIP-350 */
 const BECH32M_CONSTANT: u32 = 0x2bc830a3;
-
-#[derive(Debug, PartialEq)]
-pub
-enum Network {
-	Mainnet,
-	Testnet,
-	Regtest
-}
 fn network_to_hrp(n: Network) -> String {
 	match n {
 		Network::Mainnet => "bc".to_string(),
