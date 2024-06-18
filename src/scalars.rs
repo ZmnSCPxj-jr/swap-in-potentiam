@@ -32,6 +32,7 @@ fn scalar_negate(a: &Scalar) -> Scalar {
 	Scalar::from(sk_a.negate())
 }
 
+#[cfg(test)]
 mod test {
 	use hex;
 	use super::*;
