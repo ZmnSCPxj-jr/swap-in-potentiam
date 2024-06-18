@@ -9,6 +9,7 @@ use secp256k1::Verification;
 use super::bip327;
 use super::bip340;
 use super::bip341;
+use super::bip350;
 use super::scripts;
 
 fn get_root_hash( alice: &PublicKey
@@ -69,8 +70,8 @@ An address can be derived for the returned
 Taproot Xonly pubkey by running the return
 value of this function to a bech32m library,
 giving the SegWit version 1.
-TODO: A function to give a string bech32m
-address.
+The `derive_taproot_address` function generates a
+bech32m SegWitv1 "P2TR" address.
 */
 pub
 fn derive_taproot_xonly_pubkey<C>( secp256k1: &Secp256k1<C>
@@ -126,6 +127,43 @@ fn derive_taproot_scriptpubkey<C>( secp256k1: &Secp256k1<C>
 	buf.extend_from_slice(&[0x51, 0x20]);
 	buf.extend_from_slice(&xonly_pubkey);
 	return Some(buf);
+}
+
+/**
+`derive_taproot_address` generates a pay-to-Taproot (P2TR)
+address, returned as a `String`, from the given `alice`
+and `bob` public keys.
+
+Generally, `alice` is any public key whose private key
+is derivable by the client (using any derivation scheme),
+and `bob` is the Lightning Network node ID of the LSP.
+
+The operation may fail (return None) on the edge
+case that the Taproot address becomes the point
+at infinity.
+The probability of that happening should be
+negligibly low (to a cryptographer, i.e.
+universe heat death is more likely to come
+before you get that case).
+*/
+pub
+fn derive_taproot_address<C>( secp256k1: &Secp256k1<C>
+			    , network: bip350::Network
+			    , alice: &PublicKey
+			    , bob: &PublicKey
+			    ) -> Option<String>
+	where C: Verification
+{
+	let program = derive_taproot_xonly_pubkey(
+		secp256k1, alice, bob
+	)?;
+	Some(
+		bip350::encode_segwit(
+			network,
+			1,
+			&program
+		).expect("can only fail if version is invalid, but version is hardcoded as 1")
+	)
 }
 
 #[cfg(test)]

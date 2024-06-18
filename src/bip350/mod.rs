@@ -11,7 +11,7 @@ const BECH32_CONSTANT: u32 = 0x1;
 const BECH32M_CONSTANT: u32 = 0x2bc830a3;
 
 #[derive(Debug, PartialEq)]
-pub(crate)
+pub
 enum Network {
 	Mainnet,
 	Testnet,
